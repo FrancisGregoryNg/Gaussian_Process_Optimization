@@ -1,0 +1,20 @@
+Install Anaconda and GitKraken.
+
+Extract GPy and GPyOpt to the desired directories. [https://pypi.org/project/GPy/#files, https://pypi.org/project/GPyOpt/1.2.5/#files]
+
+Set up local repository using GitKraken.
+
+Set up conda environment using Anaconda with Python (V3.6).
+
+Open environment in terminal and install numpy (V1.15.4) and scipy (V1.2.0). [https://github.com/SheffieldML/GPy/issues/728]
+	pip install numpy==1.15.4
+	pip install scipy==1.2.0
+
+Install GPy and GPyOpt from editing folder.
+	pip install -e <GPy location>
+	pip install -e <GPyOpt location>
+
+Install additional packages for handling MS Excel spreadsheets.
+   	pip install xlrd
+   	pip install xlwt
+   	pip install xlutils	
