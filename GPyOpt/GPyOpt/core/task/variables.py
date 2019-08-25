@@ -13,6 +13,9 @@ class Variable(object):
     def is_continuous(self):
         return False
 
+    def is_discrete(self):
+        return False
+
     def expand(self):
         """
         Builds a list of single dimensional variables representing current variable.
@@ -171,6 +174,9 @@ class DiscreteVariable(Variable):
 
     def is_bandit(self):
         return False
+
+    def is_discrete(self):
+        return True
 
     def round(self, value_array):
         """

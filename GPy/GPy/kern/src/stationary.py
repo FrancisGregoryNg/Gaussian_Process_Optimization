@@ -58,9 +58,11 @@ class Stationary(Kern):
     The more common version of stationarity is that the covariance is a function of x_1 - x_2 (See e.g. R&W first paragraph of section 4.1).
     """
 
-    def __init__(self, input_dim, variance, lengthscale, ARD, active_dims, name, useGPU=False):
+    def __init__(self, input_dim, variance, lengthscale, ARD, active_dims, name, useGPU=False, Gower=False, space=None):
         super(Stationary, self).__init__(input_dim, active_dims, name,useGPU=useGPU)
         self.ARD = ARD
+        self.Gower = Gower
+        self.space = space
         if not ARD:
             if lengthscale is None:
                 lengthscale = np.ones(1)
@@ -111,8 +113,46 @@ class Stationary(Kern):
 
         K(X, X2) = K_of_r((X-X2)**2)
         """
-        r = self._scaled_dist(X, X2)
-        return self.K_of_r(r)
+        def print_diagnose(X, X2, **kwargs):
+            print(X)
+            print(X2)
+            for array_name in kwargs:
+                array = kwargs[array_name]
+                print(array_name)
+                print(array)
+                if X.shape == X2.shape:
+                    eigenvalues = np.linalg.eigvals(array)
+                print(eigenvalues)
+                print()
+
+        if self.Gower and (self.space is not None):
+            const_dims = self.space.get_continuous_dims()
+            disc_dims = self.space.get_discrete_dims()
+            lengthscale = self.space.lengthscales()
+            numDims = X.shape[1]
+            if X2 is None:
+                X2 = X 
+            '''
+            Somehow, X2 is another 2D array (multiple points instead of just one). OTherwise, the below handles a 1-D X2.
+            r_const = np.sum(abs(X[:, const_dims] - X2[const_dims]) / lengthscale, axis = 1) # Continuous Difference
+            r_disc = np.sum(X[:, disc_dims] != X2[disc_dims], axis = 1)  # Discrete Dissimilarity
+            '''
+            #r_const = np.sum(abs(X[:, np.newaxis, const_dims] - X2[np.newaxis, :, const_dims]) / lengthscale, axis = 2) # Continuous Difference
+            #r_disc = np.sum(X[:, np.newaxis, disc_dims] != X2[np.newaxis, :, disc_dims], axis = 2)  # Discrete Dissimilarity
+            #r = (r_const + r_disc) #/ numDims
+
+            r_const = np.sum(abs(X[:, np.newaxis, const_dims] - X2[np.newaxis, :, const_dims]) / lengthscale, axis = 2) # Continuous Difference
+            r_disc = np.sum(X[:, np.newaxis, disc_dims] != X2[np.newaxis, :, disc_dims], axis = 2)  # Discrete Dissimilarity
+            r = (r_const + r_disc) #/ numDims
+            K_const = self.K_of_r(r_const)
+            K_disc = self.K_of_r(r_disc)
+            K_Gower = K_const * K_disc
+            #print_diagnose(X, X2, K_const = K_const, K_disc = K_disc, K_Gower = K_Gower)
+            kernel = K_Gower
+        else:
+            r = self._scaled_dist(X, X2)
+            kernel = self.K_of_r(r)
+        return kernel
 
     @Cache_this(limit=3, ignore_args=())
     def dK_dr_via_X(self, X, X2):
@@ -526,8 +566,8 @@ class Matern52(Stationary):
 
        k(r) = \sigma^2 (1 + \sqrt{5} r + \\frac53 r^2) \exp(- \sqrt{5} r)
     """
-    def __init__(self, input_dim, variance=1., lengthscale=None, ARD=False, active_dims=None, name='Mat52'):
-        super(Matern52, self).__init__(input_dim, variance, lengthscale, ARD, active_dims, name)
+    def __init__(self, input_dim, variance=1., lengthscale=None, ARD=False, active_dims=None, name='Mat52', useGPU=False, Gower=False, space=None):
+        super(Matern52, self).__init__(input_dim, variance, lengthscale, ARD, active_dims, name, useGPU, Gower, space)
 
     def to_dict(self):
         """

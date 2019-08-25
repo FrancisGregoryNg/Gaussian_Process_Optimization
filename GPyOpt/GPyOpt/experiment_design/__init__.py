@@ -3,6 +3,7 @@ from .grid_design import GridDesign
 from .latin_design import LatinDesign
 from .random_design import RandomDesign
 from .sobol_design import SobolDesign
+from .latin_mixed_design import LatinMixedDesign
 
 def initial_design(design_name, space, init_points_count):
     design = None
@@ -14,6 +15,8 @@ def initial_design(design_name, space, init_points_count):
         design = GridDesign(space)
     elif design_name == 'latin':
         design = LatinDesign(space)
+    elif design_name == 'latin_mixed':
+        design = LatinMixedDesign(space)
     else:
         raise ValueError('Unknown design type: ' + design_name)
 

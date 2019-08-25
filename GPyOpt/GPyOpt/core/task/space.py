@@ -6,7 +6,7 @@ import itertools
 from copy import deepcopy
 
 from .variables import BanditVariable, DiscreteVariable, CategoricalVariable, ContinuousVariable, create_variable
-from ..errors import InvalidConfigError
+from ..errors import InvalidConfigError, InvalidVariableNameError
 from ...util.general import values_to_array, merge_values
 
 
@@ -277,6 +277,12 @@ class Design_space(object):
         """
         return any(v.is_continuous() for v in self.space)
 
+    def has_discrete(self):
+        '''
+        Returns `true` if the space contains at least one discrete variable, and `false` if otherwise
+        '''
+        return any(v.is_discrete() for v in self.space)
+
     def _has_bandit(self):
         return any(v.is_bandit() for v in self.space)
 
@@ -342,6 +348,72 @@ class Design_space(object):
 
         return np.atleast_2d(np.concatenate(x_rounded))
 
+    def lengthscales(self):
+        """
+        Compute the lengthscales to be used in kernel calculations for continuous dimensions only.
+        Dimensionality is assumed to be 1.
+        """
+        lengthscale = []
+        for d in self.space:
+            if d.type == 'continuous':
+                valueRange = d.domain[-1] - d.domain[0]
+                lengthscale.append(valueRange)
+
+        return lengthscale
+
+    def zeroStart_shifted_bounds(self):
+        """
+        Extracts the bounds of all the inputs of the domain of the *model*, treating discrete values similar 
+        to continuous bounds (assuming that the values are consecutively increasing integers). Dimensionality 
+        is assumed to be 1.
+        """
+        shifted_bounds = []
+        for d in self.space:
+            lower_bound = 0
+            upper_bound = d.domain[-1] - d.domain[0]
+            shifted_bounds.append((lower_bound, upper_bound))
+
+        return shifted_bounds
+
+    def fit_to_zeroStart_shifted_bounds(self, X):
+        """
+        Transforms an array of values, X, expressed in the original bounds and fitting the elements to 
+        zero-start shifted bounds. The order of variables must be consistent between X and the design space.
+        """
+        X = np.asarray(X)
+        shifts = []
+        for d in self.space:
+            shifts.append(d.domain[0])
+        shifts = np.asarray(shifts)
+
+        return X - shifts 
+
+    def revert_from_zeroStart_shifted_bounds(self, X):
+        """
+        Transforms an array of values, X, expressed in zero-start shifted bounds back into values proper to the 
+        original unshifted bounds. The order of variables must be consistent between X and the design space.
+        """
+        X = np.asarray(X)
+        shifts = []
+        for d in self.space:
+            shifts.append(d.domain[0])
+        shifts = np.asarray(shifts)
+
+        return X + shifts   
+
+    def variableType_locations(self, type):
+        '''
+        Returns an array of ones and zeros where the element is one if it corresponds to the type of 
+        variable specified.
+        '''
+        match = []
+        for d in self.space:
+            if d.type == type:
+                match.extend(1)
+            else:
+                match.extend(0)
+        match = np.asarray(match)
+        return match
 
 #################### ------ ALL THE REAMINING FUNCIONS ARE REDUNDANT NOW AND SHOULD BE DEPRECATED
 
@@ -383,6 +455,18 @@ class Design_space(object):
     ### ---- Atributes for the discrete variables
     ###
 
+    def get_discrete_values(self):
+        '''
+        Extracts the values of the discrete variables.
+        '''
+        bounds = []
+        for d in self.space:
+            if d.type == 'discrete':
+                if d.dimensionality == 1:
+                    bounds.append(d.domain)
+                else:   
+                    bounds.append([d.domain]*d.dimensionality) # append instead of extend: to store values in separate lists of tuples
+        return bounds
 
     def get_discrete_grid(self):
         """
@@ -409,7 +493,7 @@ class Design_space(object):
 
     def get_discrete_space(self):
         """
-        Extracts the list of dictionaries with continuous components
+        Extracts the list of dictionaries with discrete components
         """
         return [d for d in self.space if d.type == 'discrete']
 

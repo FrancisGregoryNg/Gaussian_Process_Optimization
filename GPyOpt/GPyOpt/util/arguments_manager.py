@@ -90,6 +90,11 @@ class ArgumentsManager(object):
         model_optimizer_type = self.kwargs.get('model_optimizer_type','lbfgs')
         max_iters = self.kwargs.get('max_iters',1000)
         optimize_restarts = self.kwargs.get('optimize_restarts',5)
+        Gower = self.kwargs.get('Gower',False)
+        if Gower is True:
+            spaceX = space
+        else:
+            spaceX = None
 
         # --------
         # --- Initialize GP model with MLE on the parameters
@@ -101,7 +106,7 @@ class ArgumentsManager(object):
                 sparse = True
             optimize_restarts = self.kwargs.get('optimize_restarts',5)
             num_inducing = self.kwargs.get('num_inducing',10)
-            return GPModel(kernel, noise_var, exact_feval, model_optimizer_type, max_iters, optimize_restarts, sparse, num_inducing, verbosity_model, ARD)
+            return GPModel(kernel, noise_var, exact_feval, model_optimizer_type, max_iters, optimize_restarts, sparse, num_inducing, verbosity_model, ARD, Gower, spaceX)
 
         # --------
         # --- Initialize GP model with MCMC on the parameters

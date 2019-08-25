@@ -170,7 +170,7 @@ class BayesianOptimization(BO):
                                                     de_duplication         = self.de_duplication)
 
     def _model_chooser(self):
-        return self.problem_config.model_creator(self.model_type, self.exact_feval,self.space)
+        return self.problem_config.model_creator(self.model_type, self.exact_feval, self.space)
 
     def _acquisition_chooser(self):
         return self.problem_config.acquisition_creator(self.acquisition_type, self.model, self.space, self.acquisition_optimizer, self.cost.cost_withGradients)

@@ -28,7 +28,7 @@ class GPModel(BOModel):
 
     analytical_gradient_prediction = True  # --- Needed in all models to check is the gradients of acquisitions are computable.
 
-    def __init__(self, kernel=None, noise_var=None, exact_feval=False, optimizer='bfgs', max_iters=1000, optimize_restarts=5, sparse = False, num_inducing = 10,  verbose=True, ARD=False):
+    def __init__(self, kernel=None, noise_var=None, exact_feval=False, optimizer='bfgs', max_iters=1000, optimize_restarts=5, sparse = False, num_inducing = 10,  verbose=True, ARD=False, Gower=False, space=None):
         self.kernel = kernel
         self.noise_var = noise_var
         self.exact_feval = exact_feval
@@ -40,6 +40,8 @@ class GPModel(BOModel):
         self.num_inducing = num_inducing
         self.model = None
         self.ARD = ARD
+        self.Gower = Gower
+        self.space = space
 
     @staticmethod
     def fromConfig(config):
@@ -53,7 +55,7 @@ class GPModel(BOModel):
         # --- define kernel
         self.input_dim = X.shape[1]
         if self.kernel is None:
-            kern = GPy.kern.Matern52(self.input_dim, variance=1., ARD=self.ARD) #+ GPy.kern.Bias(self.input_dim)
+            kern = GPy.kern.Matern52(self.input_dim, variance=1., ARD=self.ARD, Gower=self.Gower, space=self.space) #+ GPy.kern.Bias(self.input_dim)
         else:
             kern = self.kernel
             self.kernel = None
