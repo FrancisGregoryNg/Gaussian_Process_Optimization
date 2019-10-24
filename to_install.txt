@@ -2,9 +2,10 @@ Install Anaconda and GitKraken.
 
 Extract GPy and GPyOpt to the desired directories. [https://pypi.org/project/GPy/#files, https://pypi.org/project/GPyOpt/1.2.5/#files]
 
-Set up local repository using GitKraken.
+Set up local repository using GitKraken. (Open repository if edited folder is already existing with .gitignore).
 
-Set up conda environment using Anaconda with Python (V3.6).
+Set up conda environment using Anaconda with Python (V3.6) from the terminal of the base (root) environment.
+	conda create -n Gaussian_Process_Optimization anaconda python=3.6
 
 Open environment in terminal and install numpy (V1.15.4) and scipy (V1.2.0). [https://github.com/SheffieldML/GPy/issues/728]
 	pip install numpy==1.15.4

@@ -41,6 +41,7 @@ GPyOpt/experiment_design/__init__.py
 GPyOpt/experiment_design/base.py
 GPyOpt/experiment_design/grid_design.py
 GPyOpt/experiment_design/latin_design.py
+GPyOpt/experiment_design/latin_mixed_design.py
 GPyOpt/experiment_design/random_design.py
 GPyOpt/experiment_design/sobol_design.py
 GPyOpt/interface/__init__.py

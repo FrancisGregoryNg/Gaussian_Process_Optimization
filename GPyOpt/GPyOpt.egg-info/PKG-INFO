@@ -101,5 +101,5 @@ Classifier: Operating System :: Microsoft :: Windows
 Classifier: Operating System :: POSIX :: Linux
 Classifier: Programming Language :: Python :: 2.7
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
-Provides-Extra: docs
 Provides-Extra: optimizer
+Provides-Extra: docs

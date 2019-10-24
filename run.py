@@ -108,7 +108,7 @@ class SLT_Optimization():
     def load_component_info(self):
         def _load_component(sheet_name):
             component = []
-            with xlrd.open_workbook('components.xlsx', on_demand=True) as book:
+            with xlrd.open_workbook('..\..\2---Data\components.xlsx', on_demand=True) as book:
                 sheet = book.sheet_by_name(sheet_name)
                 labels = sheet.row_values(0)
                 for rowx in range(1, sheet.nrows):
@@ -116,7 +116,7 @@ class SLT_Optimization():
                     component.append(dict(zip(labels, data)))
             return component
         def _add_value_of_motor_for_propeller(sheet_name):
-            with xlrd.open_workbook('components.xlsx', on_demand=True) as book:
+            with xlrd.open_workbook('..\..\2---Data\components.xlsx', on_demand=True) as book:
                 sheet = book.sheet_by_name(sheet_name)
                 motors = sheet.col_values(0) #maintain alignment with rowx, get() will just ignore the nonexisting key
                 propellers = sheet.row_values(0, start_colx=1)
@@ -166,7 +166,7 @@ class SLT_Optimization():
     def request_actual_results(self, X=None):
         if X is None:
             X = self.X
-        file = 'evaluations.xls'
+        file = '..\..\2---Data\evaluations.xls'
         batch_size = X.shape[0]
         variables = X.shape[1]
         # ----- Write style -----

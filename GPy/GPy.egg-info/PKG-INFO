@@ -27,7 +27,7 @@ Classifier: Intended Audience :: Science/Research
 Classifier: Intended Audience :: Developers
 Classifier: Topic :: Software Development
 Classifier: Topic :: Software Development :: Libraries :: Python Modules
-Provides-Extra: plotting
 Provides-Extra: docs
-Provides-Extra: notebook
 Provides-Extra: optional
+Provides-Extra: plotting
+Provides-Extra: notebook
