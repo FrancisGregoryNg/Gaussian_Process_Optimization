@@ -1,70 +1,32 @@
 # region [Imports]
+import GPyOpt
 import xlrd
 import xlwt
 import xlutils.copy
-import GPyOpt
+import pathlib
 import matplotlib
 import numpy as np
 np.set_printoptions(linewidth=200, precision=4)
 # endregion
 
 # region [Definitions]
-def compare_with_actual(problem, variables,type):
-    if type == 'simple':
-        pass
-    elif type == 'mixed':
-        continuous_bounds = variables[0]['domain']
-        discrete_levels = variables[1]['domain']
-        fig = matplotlib.pyplot.figure(figsize=(10, 5 * len(discrete_levels)))
-        ax = [None for n in range(2*len(discrete_levels))]
-        label_color = 'midnightblue'
-
-        plot = 0
-        x1_continuous = np.linspace(continuous_bounds[0], continuous_bounds[1], 1000)
-        for x2_discrete in discrete_levels:
-            Y_actual = balance(np.append(x1_continuous.reshape(-1, 1), x2_discrete * np.ones(x1_continuous.reshape(-1, 1).shape), axis = 1), weights)
-            Y_metamodel = []
-            for x1 in x1_continuous:
-                X = np.asarray([x1, x2_discrete])
-                mv = problem.model.predict(X)
-                Y = np.asarray(mv).reshape(2)[0]
-                Y_metamodel.append(Y)
-                    
-            ax[plot] = fig.add_subplot(len(discrete_levels), 2, plot+1)
-            title = f'Discrete value #{x2_discrete}: {weights[0][x2_discrete]} (Actual)'
-            ax[plot].set_title(title, fontweight = 550, fontsize = 'large')
-            ax[plot].plot(x1_continuous, Y_actual, 'b') 
-            ax[plot].set_xlabel('x-position', color = label_color)
-            ax[plot].set_ylabel('Distance (to minimize)', color = label_color)
-            plot += 1
-
-            ax[plot] = fig.add_subplot(len(discrete_levels), 2, plot+1)
-            title = f'Discrete value #{x2_discrete}: {weights[0][x2_discrete]} (Predicted)'
-            ax[plot].set_title(title, fontweight = 550, fontsize = 'large')
-            ax[plot].plot(x1_continuous, Y_metamodel, 'b') 
-            ax[plot].set_xlabel('x-position', color = label_color)
-            ax[plot].set_ylabel('Distance (to minimize)', color = label_color)
-            plot += 1
-        
-        fig.tight_layout(pad=0.35, w_pad=0.5, h_pad=3.5)
-    else:
-        print('"Type" must only be either "simple" or "mixed".')
-
 class SLT_Optimization():
-    def __init__(self, plane_index=0, beam_length_range=(None, None), beam_clearance_range=(None, None)):
+    Datafolder = pathlib.Path(__file__).parents[2].joinpath('2---Data')
+    def __init__(self, target_velocity, plane_index=0, beam_index = 0, beam_length_range=(None, None), beam_clearance_range=(None, None)):
         '''
         X = input variables 
-                0 - 'wing_connect_L'        - connection point from fuselage
-                1 - 'wing_connect_W'        - connection point from trailing edge of wing
-                2 - 'beam_length'           - length of beam
-                3 - 'beam_clearance'        - distance from beam endpoints
-                4 - 'propeller'             - propeller selection
-                5 - 'motor'                 - motor selection
-                6 - 'battery'               - battery seletion
-        D = drag coefficients
-                  - data from simulations   - intermediate between X and Y
+                0 - 'motor'                     - motor selection
+                1 - 'propeller'                 - propeller selection
+                2 - 'battery'                   - battery selection
+                3 - 'distanceFromCenterline'    - connection point from the center of the fuselage
+                4 - 'beam_length'               - length of beam
+                5 - 'pitch'                     - angle of the drone with the apparent wind
+                
+        D = drag force
+                  - data from simulations       - intermediate between X and Y
+                  
         Y = output variables
-                  - endurance estimate      - calculated value
+                  - endurance estimate          - calculated value
         '''
         # -----Experimental Design---------------------------
         self.X_design = None
@@ -99,16 +61,18 @@ class SLT_Optimization():
         # -----Others----------------------------------------
         self.iteration = 0
         self.requested_points = 0
+        self.target_velocty = target_velocity   # km/hr input value
         self.plane = plane_index    # choice of plane is not an optimization variable (default is 0)
+        self.beam = beam_index  # choice of beam is not an optimization variable (default is 0)
         self.plane_data, self.beam_data, self.battery_data, self.motor_data, self.propeller_data = self.load_component_info()
-        self.variables = self.define_variables(plane_index, beam_length_range, beam_clearance_range)
+        self.variables = self.define_variables(beam_length_range, beam_clearance_range)
         self.space = GPyOpt.core.task.space.Design_space(self.variables)
         return None
     
     def load_component_info(self):
         def _load_component(sheet_name):
             component = []
-            with xlrd.open_workbook('..\..\2---Data\components.xlsx', on_demand=True) as book:
+            with xlrd.open_workbook(str(self.Datafolder) + '/MBO/components.xlsx', on_demand=True) as book:
                 sheet = book.sheet_by_name(sheet_name)
                 labels = sheet.row_values(0)
                 for rowx in range(1, sheet.nrows):
@@ -116,7 +80,7 @@ class SLT_Optimization():
                     component.append(dict(zip(labels, data)))
             return component
         def _add_value_of_motor_for_propeller(sheet_name):
-            with xlrd.open_workbook('..\..\2---Data\components.xlsx', on_demand=True) as book:
+            with xlrd.open_workbook(str(self.Datafolder) + '/MBO/components.xlsx', on_demand=True) as book:
                 sheet = book.sheet_by_name(sheet_name)
                 motors = sheet.col_values(0) #maintain alignment with rowx, get() will just ignore the nonexisting key
                 propellers = sheet.row_values(0, start_colx=1)
@@ -163,12 +127,50 @@ class SLT_Optimization():
             ]             
         return variables
 
-    def request_actual_results(self, X=None):
+    def estimate_pitch(self, X=None):
+        file = str(self.Datafolder) + '/CFD/Pitch.xlsx'
         if X is None:
             X = self.X
-        file = '..\..\2---Data\evaluations.xls'
+        plane = self.plane_data[self.plane] 
+        beam = self.beam_data[self.beam]
+        motor = self.motor_data[X[configuration, 0]]
+        propeller = self.propeller_data[X[configuration, 1]]
+        battery = self.battery_data[X[configuration, 2]]
+        # ----- Write style -----
+        style = xlwt.XFStyle()
+        style.font = xlwt.Font()
+        style.font.name = 'Levenim MT'
+        style.font.height = 200 # multiply font size by 20
+        style.alignment = xlwt.Alignment()
+        style.alignment.horz = xlwt.Alignment.HORZ_CENTER
+        style.alignment.vert = xlwt.Alignment.VERT_CENTER
+        # ----------------------        
+        pitch = []
+        for configuration in range(X.shape[0]):
+            beam_length = X[configuration, 4]
+            W = (plane['weight'] 
+                + beam_length * beam['weight_per_L']
+                + 4 * propeller['weight']
+                + 4 * motor['weight']
+                + battery['weight']) * 0.0098      # convert from grams to Newtons
+            with xlrd.open_workbook(file, formatting_info = True, on_demand=True) as book:
+                book_write = xlutils.copy.copy(book)
+            sheet = book_write.get_sheet(0)     # write configurations to the sheet named "Summary"
+            sheet.write(0, 1, float(W), style)  # write in field for "weight"
+            book_write.save(file)        
+            with xlrd.open_workbook(file, on_demand=True) as book:
+                sheet = book.sheet_by_name('Summary')
+                estimate = sheet.row_value(1)[1]
+            pitch.append(estimate)
+        return pitch
+
+    def request_actual_results(self, X=None):
+        file = str(self.Datafolder) + '/MBO/evaluations.xls'
+        if X is None:
+            X = self.X
         batch_size = X.shape[0]
         variables = X.shape[1]
+        pitch = self.estimate_pitch(X)
         # ----- Write style -----
         style = xlwt.XFStyle()
         style.font = xlwt.Font()
@@ -184,6 +186,7 @@ class SLT_Optimization():
         for configuration in range(batch_size):
             for variable in range(variables):
                 sheet.write(configuration+1, variable, float(X[configuration, variable]), style)
+            sheet.write(configuration+1, variables, float(pitch(configuration), style))
         book_write.save(file)
         input(f'Please open {file}, fill up the output column, then save and close the file.\nPress any key when done.')
         with xlrd.open_workbook(file, formatting_info = True, on_demand=True) as book:
@@ -216,22 +219,16 @@ class SLT_Optimization():
             D = self.D
         Y = []
         for configuration in range(X.shape[0]):
-            plane = self.plane_data[self.plane]
-            propeller = self.propeller_data[X[configuration, 4]]
-            motor = self.motor_data[X[configuration, 5]]
-            battery = self.battery_data[X[configuration, 6]]
+            motor = self.motor_data[X[configuration, 0]]
+            propeller = self.propeller_data[X[configuration, 1]]
+            battery = self.battery_data[X[configuration, 2]]
             R = battery['battery_hour_rating']      # battery hour rating is typically equal to 1hr
             n = 1.3     # Peukert exponent is typically equal to 1.3 for LiPo batteries
             eff = motor['efficiency'][propeller['name']]  # motor-propeller efficiency is stored in the motor data and can be accessed using the propeller's name
             V = battery['cell'] * 3.7     # 3.7 volts in each LiPo cell
             C = battery['mah'] / 1000       # convert from mAh to Ah
-            p = 0       # get the density of air in kg/m3
-            U = 0       # get the flight velocity in m/s
-            S = 0       # get the reference area in m2
-            C_D0 = 0 * D[configuration] # find a way to get the zero-lift drag-coefficient
-            W = (plane['weight'] + propeller['weight'] + motor['weight'] + battery['weight']) * 0.0098      # convert from grams to Newtons
-            k = 0       # find a way to get the lift-dependent drag factor
-            E = R**(1-n) * ((eff * V * C)/(0.5 * p * U**3 * S * C_D0 + (2 * W**2 * k) / (p * U * S))) ** n
+            U = self.target_velocty * (1000/3600)      # get the flight velocity in m/s from km/hr input value
+            E = R**(1-n) * ((eff * V * C)/(D * U)) ** n
             Y.append(E)
         return Y
 
@@ -255,51 +252,56 @@ class SLT_Optimization():
         return X_best, D_best, Y_best
 
     def run_optimization(self, num_design = 20, num_iteration = 50):
+        # Experimental Design
         self.X_design = GPyOpt.experiment_design.LatinMixedDesign(self.space).get_samples(num_design)
         self.D_design = self.request_actual_results(self.X_design)
         self.Y_design = self.calculate_endurance_estimate(self.X_design, self.D_design)
+        self.X_history, self.D_history, self.Y_history = self.X_design, self.D_design, self.Y_design    # Initialize history of data
+
         self.X_best_design, self.D_best_design, self.Y_best_design = self.get_best_values(self.X_design, self.D_design, self.Y_design)
-        # get X_best_design and Y_best_design (preferrably define a function to get the best value so it can be recycled for taking the overall best)
-        '''
-        X_initial_best = X_values_mixed[np.argmin(Y_values_mixed)]
-        Y_initial_best = Y_values_mixed[np.argmin(Y_values_mixed)]
-        '''
-        # 
-        '''
-        for step in range(numIterations_mixed):
+        self.X_best, self.D_best, self.Y_best = self.X_best_design, self.D_best_design, self.Y_best_design  # Initialize current best value
+        self.X_best_history, self.D_best_history, self.Y_best_history = self.X_best_design, self.D_best_design, self.Y_best_design # Initialize history of best values
+
+        # Iterations
+        for step in range(num_iteration):
             mixed_problem = GPyOpt.methods.BayesianOptimization(
                 f = None, 
-                domain = variables,
+                domain = self.variables,
                 constraints = None,
                 cost_withGradients = None,
                 model_type = 'GP',
-                X = X_values_mixed,
-                Y = Y_values_mixed,
+                X = self.X_history,
+                Y = self.Y_history,
                 acquisition_type = 'EI',
                 normalize_Y = True,
                 exact_feval = False,
                 acquisition_optimizer_type = 'lbfgs',
                 evaluator_type = 'local_penalization',
-                batch_size = 5,
+                batch_size = 10,
                 maximize = False,
                 de_duplication = True,
-                Gower = True,
+                Gower = False,
                 noise_var = 0)
-            x_next_mixed = mixed_problem.suggest_next_locations(ignored_X = X_values_mixed)
-            y_next_mixed = balance(x_next_mixed, weights)
-            X_values_mixed = np.vstack((X_values_mixed, x_next_mixed))
-            Y_values_mixed = np.vstack((Y_values_mixed, y_next_mixed))
+
+            self.X = np.asarray(mixed_problem.suggest_next_locations(ignored_X = self.X_history))
+            self.D = self.request_actual_results(self.X)
+            self.Y = self.calculate_endurance_estimate(self.X, self.D)
+            self.X_history = np.vstack(self.X_history, self.X)
+            self.D_history = np.vstack(self.D_history, self.D)
+            self.Y_history = np.vstack(self.Y_history, self.Y)
+
+            self.X_best, self.D_best, self.Y_best = self.get_best_values(self.X_history, self.D_history, self.Y_history)
+            self.X_best_history = np.vstack(self.X_best_history, self.X_best)
+            self.D_best_history = np.vstack(self.D_best_history, self.D_best)
+            self.Y_best_history = np.vstack(self.Y_best_history, self.Y_best)
+
             print(f'Iteration {step+1}')
             mixed_problem.plot_convergence()
-            print(f'New location/s: {[tuple(point) for point in x_next_mixed]}\n')
-            mixed_problem._compute_results()
-            #mixed_problem.plot_convergence()
-            best_x.append(mixed_problem.x_opt)
-            best_fx.append(mixed_problem.fx_opt)     
-        '''   
+            print(f'New location/s: {[tuple(point) for point in self.X]}\n')
+        
         return None
 
 # endregion        
 
-thesis = SLT_Optimization()
+thesis = SLT_Optimization(45)
 thesis.run_optimization(num_design = 20, num_iteration = 50)
