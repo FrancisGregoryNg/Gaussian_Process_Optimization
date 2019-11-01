@@ -1,8 +1,6 @@
 # region [Imports]
 import GPyOpt
-import xlrd
-import xlwt
-import xlutils.copy
+import xlwings as xw
 import pathlib
 import matplotlib
 import numpy as np
@@ -12,7 +10,7 @@ np.set_printoptions(linewidth=200, precision=4)
 # region [Definitions]
 class SLT_Optimization():
     Datafolder = pathlib.Path(__file__).parents[2].joinpath('2---Data')
-    def __init__(self, target_velocity, plane_index=0, beam_index = 0, beam_length_range=(None, None), beam_clearance_range=(None, None)):
+    def __init__(self, target_velocity, plane_index=0, beam_index = 0, beam_length_range=(None, None)):
         '''
         X = input variables 
                 0 - 'motor'                     - motor selection
@@ -65,153 +63,110 @@ class SLT_Optimization():
         self.plane = plane_index    # choice of plane is not an optimization variable (default is 0)
         self.beam = beam_index  # choice of beam is not an optimization variable (default is 0)
         self.plane_data, self.beam_data, self.battery_data, self.motor_data, self.propeller_data = self.load_component_info()
-        self.variables = self.define_variables(beam_length_range, beam_clearance_range)
+        self.variables, self.X_invalid = self.define_variables(beam_length_range)
+        self.invalid_constraints_log = []
         self.space = GPyOpt.core.task.space.Design_space(self.variables)
         return None
     
     def load_component_info(self):
         def _load_component(sheet_name):
             component = []
-            with xlrd.open_workbook(str(self.Datafolder) + '/MBO/components.xlsx', on_demand=True) as book:
-                sheet = book.sheet_by_name(sheet_name)
-                labels = sheet.row_values(0)
-                for rowx in range(1, sheet.nrows):
-                    data = sheet.row_values(rowx)
-                    component.append(dict(zip(labels, data)))
+            componentFile = str(self.Datafolder) + '/MBO/components.xlsx'
+            componentData = xw.Book(str(pathlib.PureWindowsPath(componentFile)))
+            sheet = componentData.sheets[sheet_name]
+            active_columns = sheet.range('A1').end('right').column
+            active_rows = sheet.range('A1').end('down').row
+            labels = sheet.range((1, 1), (1, active_columns)).value
+            for row in range(1, active_rows+1): # convert from 0-index to 1-index, include label row as dummy row
+                data = sheet.range((row, 1), (row, active_columns)).value
+                component.append(dict(zip(labels, data)))
+            print(sheet_name)
+            print(component)
             return component
-        def _add_value_of_motor_for_propeller(sheet_name):
-            with xlrd.open_workbook(str(self.Datafolder) + '/MBO/components.xlsx', on_demand=True) as book:
-                sheet = book.sheet_by_name(sheet_name)
-                motors = sheet.col_values(0) #maintain alignment with rowx, get() will just ignore the nonexisting key
-                propellers = sheet.row_values(0, start_colx=1)
-                for rowx in range(1, sheet.nrows):
-                    values = sheet.row_values(rowx, start_colx=1)
-                    value_dict = ({propeller: value for propeller, value in zip (propellers, values) 
-                                if (value is not None and value != '' and value != 0)})
-                    motor_to_update = next((item for item in motor_data if item.get('name') == motors[rowx]), None)
-                    if motor_to_update is not None:
-                        motor_to_update.update({sheet_name: value_dict}) 
-            return None
         plane_data = _load_component('plane')
         beam_data = _load_component('beam')
         battery_data = _load_component('battery')
         motor_data = _load_component('motor')
         propeller_data = _load_component('propeller')
-        _add_value_of_motor_for_propeller('thrust')
-        _add_value_of_motor_for_propeller('efficiency')
-        
         return plane_data, beam_data, battery_data, motor_data, propeller_data
 
-    def define_variables(self, beam_length_range=(None, None), beam_clearance_range=(None, None)):
+    def define_variables(self, beam_length_range=(None, None)):
         plane = self.plane_data[self.plane]
         if beam_length_range == (None, None):
-            beam_length_min = 3*plane['wing_W_max']
-            beam_length_max = 10*plane['wing_W_max']
-            beam_length_range = (beam_length_min, beam_length_max)
-        if beam_clearance_range == (None, None):
-            beam_clearance_min = 5
-            beam_clearance_max = 50
-            beam_clearance_range = (beam_clearance_min, beam_clearance_max)
-        propellers = tuple(range(len(self.propeller_data)))
-        motors = tuple(range(len(self.propeller_data)))
-        batteries = tuple(range(len(self.battery_data)))
+            beam_length_range = (50, 100)
+        centerline_distance_range = (plane['connection_min'], plane['connection_max'])
+        pitch_range = (0, 30)
+        propellers = tuple(range(1, len(self.propeller_data)+1))
+        motors = tuple(range(1, len(self.motor_data)+1))
+        batteries = tuple(range(1, len(self.battery_data)+1))
         variables = \
             [
-            {'name': 'wing_connect_L', 'type': 'continuous', 'domain':(plane['wing_L_min'], plane['wing_L_max'])},  # connection point from fuselage
-            {'name': 'wing_connect_W', 'type': 'continuous', 'domain':(plane['wing_W_min'], plane['wing_W_max'])},  # connection point from trailing edge of wing
-            {'name': 'beam_length', 'type': 'continuous', 'domain':beam_length_range},  # length of beam
-            {'name': 'beam_clearance', 'type': 'continuous', 'domain':beam_clearance_range},    # distance from beam endpoints
-            {'name': 'propeller', 'type': 'discrete', 'domain': propellers},    # propeller selection
             {'name': 'motor', 'type': 'discrete', 'domain': motors},    # motor selection
+            {'name': 'propeller', 'type': 'discrete', 'domain': propellers},    # propeller selection
             {'name': 'battery', 'type': 'discrete', 'domain':batteries},    # battery seletion
+            {'name': 'distanceFromCenterline', 'type': 'continuous', 'domain':centerline_distance_range},  # connection point from center of fuselage
+            {'name': 'beam_length', 'type': 'continuous', 'domain':beam_length_range},  # length of beam
+            {'name': 'pitch', 'type': 'continuous', 'domain':pitch_range},    # pitch of the SLT hybrid
             ]             
-        return variables
+        X_invalid = np.asarray([0, 0, 0, 0, 0, 0]) # initialize array of invalid values to be ignored in optimization
+        return variables, X_invalid
 
     def estimate_pitch(self, X=None):
-        file = str(self.Datafolder) + '/CFD/Pitch.xlsx'
+        pitchFile = str(self.Datafolder) + '/CFD/Pitch.xls'
         if X is None:
             X = self.X
         plane = self.plane_data[self.plane] 
         beam = self.beam_data[self.beam]
-        motor = self.motor_data[X[configuration, 0]]
-        propeller = self.propeller_data[X[configuration, 1]]
-        battery = self.battery_data[X[configuration, 2]]
-        # ----- Write style -----
-        style = xlwt.XFStyle()
-        style.font = xlwt.Font()
-        style.font.name = 'Levenim MT'
-        style.font.height = 200 # multiply font size by 20
-        style.alignment = xlwt.Alignment()
-        style.alignment.horz = xlwt.Alignment.HORZ_CENTER
-        style.alignment.vert = xlwt.Alignment.VERT_CENTER
-        # ----------------------        
         pitch = []
         for configuration in range(X.shape[0]):
+            motor = self.motor_data[int(X[configuration, 0])]
+            propeller = self.propeller_data[int(X[configuration, 1])]
+            battery = self.battery_data[int(X[configuration, 2])]
             beam_length = X[configuration, 4]
             W = (plane['weight'] 
                 + beam_length * beam['weight_per_L']
                 + 4 * propeller['weight']
                 + 4 * motor['weight']
                 + battery['weight']) * 0.0098      # convert from grams to Newtons
-            with xlrd.open_workbook(file, formatting_info = True, on_demand=True) as book:
-                book_write = xlutils.copy.copy(book)
-            sheet = book_write.get_sheet(0)     # write configurations to the sheet named "Summary"
-            sheet.write(0, 1, float(W), style)  # write in field for "weight"
-            book_write.save(file)        
-            with xlrd.open_workbook(file, on_demand=True) as book:
-                sheet = book.sheet_by_name('Summary')
-                estimate = sheet.row_value(1)[1]
+            pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
+            weight_max = pitchData.sheets['Interface'].range('B2').value
+            if W < weight_max:
+                pitchData.sheets['Interface'].range('B1').value = W
+                estimate = pitchData.sheets['Interface'].range('B3').value
+            else:
+                estimate = None
             pitch.append(estimate)
         return pitch
 
-    def request_actual_results(self, X=None):
-        file = str(self.Datafolder) + '/MBO/evaluations.xls'
+    def process_actual_results(self, X=None):
+        evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
         if X is None:
             X = self.X
         batch_size = X.shape[0]
         variables = X.shape[1]
         pitch = self.estimate_pitch(X)
-        # ----- Write style -----
-        style = xlwt.XFStyle()
-        style.font = xlwt.Font()
-        style.font.name = 'Levenim MT'
-        style.font.height = 200 # multiply font size by 20
-        style.alignment = xlwt.Alignment()
-        style.alignment.horz = xlwt.Alignment.HORZ_CENTER
-        style.alignment.vert = xlwt.Alignment.VERT_CENTER
-        # ----------------------
-        with xlrd.open_workbook(file, formatting_info = True, on_demand=True) as book:
-            book_write = xlutils.copy.copy(book)
-        sheet = book_write.get_sheet(0)     # write configurations to the sheet named "current"
+        evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
         for configuration in range(batch_size):
-            for variable in range(variables):
-                sheet.write(configuration+1, variable, float(X[configuration, variable]), style)
-            sheet.write(configuration+1, variables, float(pitch(configuration), style))
-        book_write.save(file)
-        input(f'Please open {file}, fill up the output column, then save and close the file.\nPress any key when done.')
-        with xlrd.open_workbook(file, formatting_info = True, on_demand=True) as book:
-            sheet = book.sheet_by_name('current')
-            evaluation = sheet.col_values(variables, start_rowx=1, end_rowx=batch_size+1)
-            valid = all(evaluation)
-            book_write = xlutils.copy.copy(book)
-        if valid:
-            sheet = book_write.get_sheet(1)     # copy configurations and evaluations to the sheet named "all"
-            for configuration in range(batch_size):
-                current_row = self.requested_points+1
-                for variable in range(variables):
-                    sheet.write(current_row, variable, float(X[configuration, variable]), style)
-                sheet.write(current_row, variables, evaluation[configuration], style)
-                self.requested_points += 1
-            sheet = book_write.get_sheet(0)     # clear the sheet named "current"
-            for configuration in range(batch_size):
-                for variable in range(variables+1):
-                    sheet.write(configuration+1, variable, '', style)            
-            book_write.save(file)            
-            D = np.asarray(evaluation)
+            row = configuration+2 # skip label row and convert from 0-index to 1-index
+            evaluationsData.sheets['current'].range(f'A{row}:E{row}').value = [float(X[configuration, value]) for value in range(5)]
+            evaluationsData.sheets['current'].range(f'F{row}').value = float(pitch[configuration])
+            evaluationsData.save()
+        input(f'Please fill up the output column.\nPress any key when done.') #can include option to exclude configurations due to faulty CFD data
+        D = evaluationsData.sheets['current'].range(f'G2:G{batch_size+2}').value
+        if all(D): #check if D have valid values
+            Y = self.calculate_endurance_estimate(X, D)
+            evaluationsData.sheets['current'].range(f'H2:H{batch_size+2}').value = Y
+            copyFrom = evaluationsData.sheets['current'].range(f'A2:H{batch_size+2}').value
+            copyTo = evaluationsData.sheets['all'].range(f'A{self.requested_points+2}:H{self.requested_points+batch_size+2}').value
+            copyTo = copyFrom
+            self.requested_points += batch_size
+            copyFrom = [['' for _ in range(8)] for _ in range(batch_size)]
+            evaluationsData.save()   
+            D = np.asarray(D)
         else:
             print(f'\nInvalid entries. Try again...')
-            D = self.request_actual_results(X)
-        return D
+            D, Y = self.process_actual_results(X)
+        return D, Y
 
     def calculate_endurance_estimate(self, X=None, D=None):
         if X is None and D is None:
@@ -219,26 +174,99 @@ class SLT_Optimization():
             D = self.D
         Y = []
         for configuration in range(X.shape[0]):
-            motor = self.motor_data[X[configuration, 0]]
-            propeller = self.propeller_data[X[configuration, 1]]
-            battery = self.battery_data[X[configuration, 2]]
+            motor = self.motor_data[int(X[configuration, 0])]
+            propeller = self.propeller_data[int(X[configuration, 1])]
+            battery = self.battery_data[int(X[configuration, 2])]
             R = battery['battery_hour_rating']      # battery hour rating is typically equal to 1hr
             n = 1.3     # Peukert exponent is typically equal to 1.3 for LiPo batteries
             eff = motor['efficiency'][propeller['name']]  # motor-propeller efficiency is stored in the motor data and can be accessed using the propeller's name
             V = battery['cell'] * 3.7     # 3.7 volts in each LiPo cell
             C = battery['mah'] / 1000       # convert from mAh to Ah
             U = self.target_velocty * (1000/3600)      # get the flight velocity in m/s from km/hr input value
-            E = R**(1-n) * ((eff * V * C)/(D * U)) ** n
+            E = R**(1-n) * ((eff * V * C)/(D[configuration] * U)) ** n
             Y.append(E)
         return Y
 
-    def check_constraints(self):
-        # positional_interference
-        # electrical compatibility
-        # weight restriction
-        # center of mass
+    def check_constraints(self, X=None):
+        if X is None:
+            X = self.X
+        plane = self.plane_data[self.plane] 
+        beam = self.beam_data[self.beam]
 
-        return
+        all_valid = False
+        invalidConfigurations_indices = []
+        problems_log = [None]
+
+        def add_log(configuration, problem):
+            if problems_log[configuration] is None:
+                problems_log[configuration] = problem
+            else:
+                problems_log[configuration] + problem
+
+            if configuration not in invalidConfigurations_indices:
+                invalidConfigurations_indices.append(configuration)
+
+        for configuration in range(X.shape[0]):
+            motor_index = '{:02}'.format(int(X[configuration, 0]))
+            propeller_index = '{:02}'.format(int(X[configuration, 1]))
+            battery_index = '{:02}'.format(int(X[configuration, 2]))
+            distanceFromCEnterline = X[configuration, 3]
+            beam_length = X[configuration, 4]
+
+            motor = self.motor_data[int(motor_index)]
+            propeller = self.propeller_data[int(propeller_index)]
+            battery = self.battery_data[int(battery_index)]
+
+            # physical clashing
+            if distanceFromCEnterline + (propeller['diameter'] / 2) < plane['connection_min']:
+                add_log(configuration, 'Propellers clash with fuselage. ')
+            if beam_length < propeller['diameter']:
+                add_log(configuration, 'Propellers clash together.')
+
+            # electrical compatibility
+            battery_cellCount = battery['cell']
+            if int(battery_cellCount) <= int(motor['cell_min']): 
+                add_log(configuration, 'Cell count below minimum. ')
+            elif int(battery_cellCount) >= int(motor['cell_max']): 
+                add_log(configuration, 'Cell count above maximum. ')
+            else:
+                testFile = (str(self.Datafolder) + '/MBO/RCbenchmark/' 
+                        + 'M' + motor_index + '_' 
+                        + 'P' + propeller_index + '_'
+                        + 'B' + battery_cellCount + '.xlsx')
+                testData = xw.Book(str(pathlib.PureWindowsPath(testFile)))
+                thrust_max = testData.sheets['Interface'].range('B2').value
+                # weight restriction
+                W = (plane['weight'] 
+                    + beam_length * beam['weight_per_L']
+                    + 4 * propeller['weight']
+                    + 4 * motor['weight']
+                    + battery['weight']) * 0.0098      # convert from grams to Newtons
+                pitchFile = str(self.Datafolder) + '/CFD/Pitch.xls'
+                pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
+                weight_max = pitchData.sheets['Interface'].range('B2').value
+                if W < weight_max:
+                    add_log(configuration, 'Insufficient estimated plane lift. ')
+                else:
+                    planeFile = (str(self.Datafolder) + '/MBO/RCbenchmark/plane.xlsx')
+                    planeData = xw.Book(str(pathlib.PureWindowsPath(planeFile)))
+                    plane_thrust_max = planeData.sheets['Interface'].range('B2').value
+                    drag = pitchData.sheets['Interface'].range('B4').value
+                    if plane_thrust_max < drag:
+                        add_log(configuration, 'Insiffucient plane thrust. ')
+                if W > 4 * thrust_max:
+                    add_log(configuration, 'Insufficient quadcopter thrust. ')
+                else:
+                    testData.sheets['Interface'].range('B1').value = W/4
+                    current_draw = testData.sheets['Interface'].range('B3').value
+                    if current_draw < (battery['mah'] / 1000) * battery['discharge']:
+                        add_log(configuration, 'Too much current draw. ')        
+
+        invalid_configurations = np.asarray(X[invalidConfigurations_indices])
+        if (invalid_configurations.ndim and invalid_configurations.size) == 0: #check if no configurations are invalid
+            all_valid = True
+
+        return all_valid, invalid_configurations, problems_log
 
     def get_best_values(self, X=None, D=None, Y=None):
         if X is None and D is None and Y is None:
@@ -254,7 +282,7 @@ class SLT_Optimization():
     def run_optimization(self, num_design = 20, num_iteration = 50):
         # Experimental Design
         self.X_design = GPyOpt.experiment_design.LatinMixedDesign(self.space).get_samples(num_design)
-        self.D_design = self.request_actual_results(self.X_design)
+        self.D_design = self.process_actual_results(self.X_design)
         self.Y_design = self.calculate_endurance_estimate(self.X_design, self.D_design)
         self.X_history, self.D_history, self.Y_history = self.X_design, self.D_design, self.Y_design    # Initialize history of data
 
@@ -283,9 +311,17 @@ class SLT_Optimization():
                 Gower = False,
                 noise_var = 0)
 
-            self.X = np.asarray(mixed_problem.suggest_next_locations(ignored_X = self.X_history))
-            self.D = self.request_actual_results(self.X)
-            self.Y = self.calculate_endurance_estimate(self.X, self.D)
+            all_valid = False
+            while not all_valid:
+                self.X = np.asarray(mixed_problem.suggest_next_locations(ignored_X = np.vstack(self.X_history, self.X_invalid)))
+                all_valid, invalid_configurations, problems_log = self.check_constraints(self.X)
+                self.X_invalid = np.vstack(self.X_invalid, invalid_configurations)
+                self.invalid_constraints_log = np.vstack(self.invalid_constraints_log, problems_log)
+
+            self.D, self.Y = self.process_actual_results(self.X)
+
+            # Recheck constraints after obtaining lift and drag in simulations
+            # If unsatisfactory, do not add to history, and add to invalid configurations
             self.X_history = np.vstack(self.X_history, self.X)
             self.D_history = np.vstack(self.D_history, self.D)
             self.Y_history = np.vstack(self.Y_history, self.Y)
