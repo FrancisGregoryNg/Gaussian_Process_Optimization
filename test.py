@@ -472,9 +472,9 @@ for step in range(numIterations_mixed):
         batch_size = 5,
         maximize = False,
         de_duplication = True,
-        Gower = False,
+        Gower = True,
         noise_var = 0)
-    x_next_mixed = mixed_problem.suggest_next_locations(ignored_X = X_values_mixed)
+    x_next_mixed = mixed_problem.suggest_next_locations()
     y_next_mixed = balance(x_next_mixed, weights)
     X_values_mixed = np.vstack((X_values_mixed, x_next_mixed))
     Y_values_mixed = np.vstack((Y_values_mixed, y_next_mixed))
