@@ -7,85 +7,62 @@ np.set_printoptions(linewidth=200, precision=4)
 
 
 def equation(x, selection_index):
-    if selection_index == 1:
-        h = x * 8
-        y = math.sin(h) + math.sin(10 * h / 3)
-    if selection_index == 2:
-        h = (x + 2) * 3
-        y = - (16 * h ** 2 - 24 * h + 5) * math.e ** -h
-    if selection_index == 3:
-        h = x * 1.2
-        y = - (1.4 - 3 * h) * math.sin(18 * h)
-    if selection_index == 4:
-        h = (x - 2.5) * 5
-        y = - (h + math.sin(h)) * math.e ** - (h ** 2)
-    if selection_index == 5:
-        h = (x + 2) * 6
-        y = math.sin(h) + math.sin(10 * h / 3) + math.log(h) - 0.84 * h + 3
-    if selection_index == 6:
-        h = x * 10
-        y = - h * math.sin(h)
-    if selection_index == 7:
-        h = x * 7
-        y = math.sin(h) ** 3 + math.cos(h) ** 3
-    if selection_index == 8:
-        h = x
-        y = - h ** (2 / 3) - (1 - h ** 2) ** (1 / 3)
-    if selection_index == 9:
-        h = x * 4
-        y = - (math.e ** (-h)) * math.sin(2 * math.pi * h)
-    if selection_index == 10:
-        h = (x - 4) * 8
-        y = (h ** 2 - 5 * h + 6) / (h ** 2 + 1)
+    target_region = {'x': (0, 1), 'y': (0, 1)}
+
+    def function(selection_index, h=1): #1 is just a dummy value
+        if selection_index == 1:
+            f = math.sin(h) + math.sin(10 * h / 3)
+            region_of_interest = {'x': (2.7, 7.5), 'y': (-2, 1)} 
+            
+        if selection_index == 2:
+            f = - (16 * h ** 2 - 24 * h + 5) * math.e ** -h
+            region_of_interest = {'x': (1.9, 3.9), 'y': (-4, -2.4)} 
+            
+        if selection_index == 3:
+            f = - (1.4 - 3 * h) * math.sin(18 * h)
+            region_of_interest = {'x': (0, 1.2), 'y': (-1.5, 2.5)} 
+            
+        if selection_index == 4:
+            f = - (h + math.sin(h)) * math.e ** - (h ** 2)
+            region_of_interest = {'x': (-10, 10), 'y': (-1, 1)} 
+            
+        if selection_index == 5:
+            f = math.sin(h) + math.sin(10 * h / 3) + math.log(h) - 0.84 * h + 3
+            region_of_interest = {'x': (2.7, 7.5), 'y': (-2, 3)} 
+            
+        if selection_index == 6:
+            f = - h * math.sin(h)
+            region_of_interest = {'x': (0, 10), 'y': (-8, 6)} 
+            
+        if selection_index == 7:
+            f = math.sin(h) ** 3 + math.cos(h) ** 3
+            region_of_interest = {'x': (0, 2 * math.pi), 'y': (-1, 1)} 
+            
+        if selection_index == 8:
+            f = - h ** (2 / 3) - (1 - h ** 2) ** (1 / 3)
+            region_of_interest = {'x': (0.001, 0.99), 'y': (-1.6, -1)} 
+            
+        if selection_index == 9:
+            f = - (math.e ** (-h)) * math.sin(2 * math.pi * h)
+            region_of_interest = {'x': (0, 4), 'y': (-0.8, 0.6)} 
+            
+        if selection_index == 10:
+            f = (h ** 2 - 5 * h + 6) / (h ** 2 + 1)
+            region_of_interest = {'x': (-5, 5), 'y': (-1, 8)} 
+        
+        return f, region_of_interest
+
+    _, region_of_interest = function(selection_index)    
+    x_translate = target_region['x'][0] - region_of_interest['x'][0]
+    y_translate = target_region['y'][0] - region_of_interest['y'][0]
+    x_squeeze = (target_region['x'][1] - target_region['x'][0]) / (region_of_interest['x'][1] - region_of_interest['x'][0])
+    y_squeeze = (target_region['y'][1] - target_region['y'][0]) / (region_of_interest['y'][1] - region_of_interest['y'][0])
+    h = x / x_squeeze - x_translate 
+    j, _ = function(selection_index, h)
+    y = (j + y_translate) * y_squeeze
 
     return y
     
-def plot_experiment_design_mixed(x_array):
-    position_left = x_array[:, 0]
-    item_left = x_array[:, 1]
-    item_right = x_array[:, 2]
-    samples = x_array.shape[0]
-    sample_numbers = np.linspace(1, samples, samples)
-    
-    label_color = 'midnightblue'
-    fig_mixed = matplotlib.pyplot.figure(figsize=(15, 5))
-    axPL = fig_mixed.add_subplot(1, 3, 1)
-    axIL = fig_mixed.add_subplot(1, 3, 2)
-    axIR = fig_mixed.add_subplot(1, 3, 3)
-    axPL.scatter(sample_numbers, position_left)
-    axPL.set_xlabel('Sample taken', color = label_color)
-    axPL.set_ylabel('Left position', color = label_color)
-    axIL.scatter(sample_numbers, item_left)
-    axIL.set_xlabel('Sample taken', color = label_color)
-    axIL.set_ylabel('Left item index', color = label_color)
-    axIR.scatter(sample_numbers, item_right)
-    axIR.set_xlabel('Sample taken', color = label_color)
-    axIR.set_ylabel('Right item index', color = label_color)
-    fig_mixed.tight_layout(pad=0.35, w_pad=2.5, h_pad=2.5)
-    fig_mixed.suptitle('Latin hypercube design (1 continuous, 2 discrete variables): 2D scatter plot', fontweight = 550, fontsize = 'large')
-    fig_mixed.subplots_adjust(top=0.9)
-    
-    figure3D = matplotlib.pyplot.figure(figsize=(15, 5))
-    axPLIL = figure3D.add_subplot(1, 3, 1, projection = '3d')
-    axPLIR = figure3D.add_subplot(1, 3, 2, projection = '3d')
-    axILIR = figure3D.add_subplot(1, 3, 3, projection = '3d')
-    axPLIL.scatter(sample_numbers, position_left, item_left)
-    axPLIL.set_xlabel('Sample taken', color = label_color)
-    axPLIL.set_ylabel('Left position', color = label_color)
-    axPLIL.set_zlabel('Left item index', color = label_color)
-    axPLIR.scatter(sample_numbers, position_left, item_right)
-    axPLIR.set_xlabel('Sample taken', color = label_color)
-    axPLIR.set_ylabel('Left position', color = label_color)
-    axPLIR.set_zlabel('Right item index', color = label_color)
-    axILIR.scatter(sample_numbers, item_left, item_right)
-    axILIR.set_xlabel('Sample taken', color = label_color)
-    axILIR.set_ylabel('Left item index', color = label_color)
-    axILIR.set_zlabel('Right item index', color = label_color)
-    figure3D.tight_layout(pad=0.35, w_pad=2.5, h_pad=2.5)
-    figure3D.suptitle('Latin hypercube design (1 continous, 2 discrete variables): 3D scatter plot', fontweight = 550, fontsize = 'large')
-    fig_mixed.subplots_adjust(top=0.9)
-    matplotlib.pyplot.draw()
-
 def plot_evaluated_points(X, Y, X_design, Y_design, x_minimum=0, y_minimum=0):
     title = 'Evaluations for Mixed-variable Balance Case'
 
@@ -95,7 +72,7 @@ def plot_evaluated_points(X, Y, X_design, Y_design, x_minimum=0, y_minimum=0):
     fig_mixed = matplotlib.pyplot.figure(figsize=(10, 5))
     ax_mixed = fig_mixed.add_subplot(1, 1, 1)
     ax_mixed.set_title(title, fontweight = 550, fontsize = 'large')
-    resolution = 1000
+    resolution = 100
     xyz = np.ones((resolution * num_discrete, 3))
 
     for index in range(num_discrete):
@@ -133,6 +110,7 @@ def plot_evaluated_points(X, Y, X_design, Y_design, x_minimum=0, y_minimum=0):
     ax_mixed.legend(handles = [design, acquisition, located_optimum, actual_optimum], loc = 'best', shadow = True)
 
     fig_mixed.tight_layout(pad=0.35, w_pad=0.5, h_pad=2.5)
+    return None
 
 def compare_with_actual(problem, variables):
     continuous_bounds = variables[0]['domain']
@@ -171,6 +149,7 @@ def compare_with_actual(problem, variables):
         plot += 1
     
     fig.tight_layout(pad=0.35, w_pad=0.5, h_pad=3.5)
+    return None
 
 space_mixed_variables = \
     [{'name': 'x', 'type': 'continuous', 'domain':(0,1)},
@@ -186,7 +165,7 @@ experiment_design_mixed_Y = np.asarray(experiment_design_mixed_Y)
 #plot_experiment_design_mixed(experiment_design_mixed_X)
 X_values_mixed = experiment_design_mixed_X
 Y_values_mixed = experiment_design_mixed_Y
-numIterations_mixed = 20
+numIterations_mixed = 10
 
 X_initial_values_mixed = X_values_mixed
 Y_initial_values_mixed = Y_values_mixed
@@ -209,7 +188,7 @@ for step in range(numIterations_mixed):
         exact_feval = False,
         acquisition_optimizer_type = 'lbfgs',
         evaluator_type = 'local_penalization',
-        batch_size = 5,
+        batch_size = 20,
         maximize = False,
         de_duplication = True,
         Gower = False,
