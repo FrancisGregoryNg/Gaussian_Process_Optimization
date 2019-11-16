@@ -151,6 +151,18 @@ def compare_with_actual(problem, variables):
     fig.tight_layout(pad=0.35, w_pad=0.5, h_pad=3.5)
     return None
 
+def plot_convergence(Y_data):
+    X = [x for x in range(1, len(Y_data)+1)]
+    Y = [y*60 for y in Y_data]
+    convergence_fig = matplotlib.pyplot.figure(figsize=(10, 5))
+    ax = convergence_fig.add_subplot(1, 1, 1)
+    title = 'Convergence Plot'
+    ax.set_title(title, fontweight = 550, fontsize = 'large')
+    ax.plot(X, Y, 'b', marker='o', s=50) 
+    ax.set_xlabel('Batch Iteration')
+    ax.set_ylabel('Endurance Estimate (minutes)')
+    return None
+
 space_mixed_variables = \
     [{'name': 'x', 'type': 'continuous', 'domain':(0,1)},
      {'name': 'selection_index', 'type': 'discrete', 'domain': (1,2,3,4,5,6,7,8,9,10)}]     
@@ -220,6 +232,8 @@ print('Y_initial_best', Y_initial_best)
 
 print('Located optimum:', mixed_problem.x_opt)
 print('Value:', mixed_problem.fx_opt)
+
+plot_convergence(Y_values_mixed)
 
 #These can be used to compare with x_opt and fx_opt to check consistency.
 #print('Located optimum:', X_values_mixed[np.argmin(Y_values_mixed)])
