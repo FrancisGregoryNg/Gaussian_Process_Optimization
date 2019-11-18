@@ -77,6 +77,13 @@ class SLT_Optimization():
         self.X_best_history = None
         self.Y_best_history = None
 
+        # -----Known Feasible but Unexplored Datapoints-----------
+        self.S_unexplored = None
+        self.E_unexplored = None
+        self.X_unexplored = None
+        self.Y_unexplored = None
+        self.constraints_log_unexplored = []
+
         # -----Others----------------------------------------
         self.metamodel = None
         self.maximize = maximize
@@ -215,7 +222,7 @@ class SLT_Optimization():
         pitch = []
         weight = []
         for configuration in range(len(X)):
-            if configuration in [int(round((step+1)*len(X)/10)) for step in range(10)]:
+            if configuration in [int(round((step+1)*len(X)/10)) for step in range(11)]:
                 print('█', end='')
             motor = self.motor_data[int(round(X[configuration][0]))]
             propeller = self.propeller_data[int(round(X[configuration][1]))]
@@ -692,9 +699,10 @@ class SLT_Optimization():
         for index, point in enumerate(X, start=1):
             if startIndex > index:
                 continue
-            drag = '│    None  ' if S[index-1][0] == 'None' else f'│ {S[index-1][0]:7.2f}  '
-            lift = '│    None  ' if S[index-1][1] == 'None' else f'│ {S[index-1][1]:7.2f}  '
-            endurance = '│    None   ' if Y[index-1][0] == 'None' else f'│ {Y[index-1][0]:7.2f}   '
+            drag = '│    None  ' if S[index-1][0] in ['None', None] else f'│ {S[index-1][0]:7.2f}  '
+            lift = '│    None  ' if S[index-1][1] in ['None', None] else f'│ {S[index-1][1]:7.2f}  '
+            endurance = '│    None   ' if Y[index-1][0] in ['None', None] else f'│ {Y[index-1][0]:7.2f}   '
+            objective = '│    None   │' if Y[index-1][1] in ['None', None] else f'│ {Y[index-1][1]:7.2f}   │'
             print(f'│  {index:3d}   '
                 + drag
                 + lift
@@ -707,7 +715,7 @@ class SLT_Optimization():
                 + f'│      {point[4]:8.2f}       '
                 + f'│  {point[5]:8.2f}   '
                 + endurance
-                + f'│ {Y[index-1][1]:7.2f}   │') 
+                + objective) 
             if endIndex == index:
                 break
             time.sleep(0.05)
@@ -717,7 +725,7 @@ class SLT_Optimization():
             print('└────────┴──────────┴──────────┴──────────┴──────────┴───────┴───────────┴──────────────┴───────────────┴─────────────────────┴─────────────┴───────────┴───────────┘\n')
         return None
 
-    def write_data_to_spreadsheet(self, initial_batch=False):
+    def write_data_to_spreadsheet(self, initial_batch=False, include_unexplored=False):
         print('\nSaving data to spreadsheet...\n')
 
         def update_sheet(sheet_name):
@@ -757,9 +765,15 @@ class SLT_Optimization():
                 X = self.X_best_history
                 Y = self.Y_best_history
                 log = None
+            elif sheet_name == 'unexplored_valid':
+                S = self.S_unexplored
+                E = self.E_unexplored
+                X = self.X_unexplored
+                Y = self.Y_unexplored
+                log = self.constraints_log_unexplored             
             evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
             evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
-            active_rows = evaluationsData.sheets[sheet_name].range('A1').end('down').row
+            active_rows = evaluationsData.sheets[sheet_name].range('E1').end('down').row    # Simulations and estimations might be blank in some configuration, but the input cannot
             evaluationsData.sheets[sheet_name].range(f'A2:N{active_rows}').clear_contents()
             rows = len(X)
             if log is not None:
@@ -787,19 +801,21 @@ class SLT_Optimization():
             update_sheet('current_best')
         update_sheet('all')
         update_sheet('all_best')
+        if include_unexplored:
+            update_sheet('unexplored_valid')
         return None
 
-    def load_previous_data_from_spreadsheet(self):
+    def load_previous_data_from_spreadsheet(self, include_unexplored=False):
         print('\nLoading data from spreadsheet...\n')
         def load_sheet(sheet_name):
             evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
             evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))  
-            active_rows = evaluationsData.sheets[sheet_name].range('A1').end('down').row
+            active_rows = evaluationsData.sheets[sheet_name].range('E1').end('down').row    # Simulations and estimations might be blank in some configuration, but the input cannot
             S = [None for entry in range(active_rows-1)]
             E = [None for entry in range(active_rows-1)]
             X = [None for entry in range(active_rows-1)]
             Y = [None for entry in range(active_rows-1)]
-            if evaluationsData.sheets[sheet_name].range('A2').value is None:    # check if blank
+            if evaluationsData.sheets[sheet_name].range('E2').value is None:    # check if blank
                 return None
             if 'best' in sheet_name:
                 load_values = evaluationsData.sheets[sheet_name].range(f'A2:L{active_rows}').value
@@ -808,11 +824,8 @@ class SLT_Optimization():
             else:
                 load_values = evaluationsData.sheets[sheet_name].range(f'A2:N{active_rows}').value
                 log = [None for entry in range(active_rows-1)]
-            print(f'{active_rows-1} entries from "{sheet_name}": ', end='')
+            print(f'{active_rows-1} entries from "{sheet_name}":')
             for entry in range(active_rows-1):
-                if active_rows > 10:
-                    if entry in [int(round((step+1)*(active_rows-1)/10)) for step in range(10)]:
-                        print('█', end='')
                 S[entry] = load_values[entry][0:2]
                 E[entry] = load_values[entry][2:4]
                 X[entry] = [int(round(value))-1 for value in load_values[entry][4:8]]
@@ -820,7 +833,6 @@ class SLT_Optimization():
                 Y[entry] = load_values[entry][10:12]
                 if 'best' not in sheet_name:
                     log[entry] = load_values[entry][12:14]
-            print()
             if len(S) > 100:
                 self.tabulate_data(S, E, X, Y, endIndex=5)
                 self.tabulate_data(S, E, X, Y, startIndex=len(S)-20, header=False)
@@ -859,6 +871,12 @@ class SLT_Optimization():
                 self.E_best_history = E
                 self.X_best_history = X
                 self.Y_best_history = Y
+            elif sheet_name == 'unexplored_valid':
+                self.S_unexplored = S
+                self.E_unexplored = E
+                self.X_unexplored = X
+                self.Y_unexplored = Y
+                self.constraints_log_unexplored = log
 
         load_sheet('design')
         load_sheet('best_design')
@@ -867,6 +885,8 @@ class SLT_Optimization():
         load_sheet('current_best')
         load_sheet('all')
         load_sheet('all_best')
+        if include_unexplored:
+            load_sheet('unexplored_valid')
         return None
 
     def plot_convergence(self):
@@ -973,8 +993,8 @@ class SLT_Optimization():
 
         self.write_data_to_spreadsheet(initial_batch=True)
 
-    def additional_batch(self, adjust_pitch=False):
-        self.load_previous_data_from_spreadsheet()
+    def additional_batch(self, batch_size_per_approach=5, adjust_pitch=False):
+        self.load_previous_data_from_spreadsheet(include_unexplored = True)
         print(f'\n\n\nNote:\n The target velocity is {float(self.target_velocity):.2f}kph. Meanwhile, pitch estimates are made using data at 45kph.\n\n')
         print(f'''
         {'-'*50}
@@ -997,7 +1017,7 @@ class SLT_Optimization():
         #    - 'thompson_sampling': batch method using Thompson sampling. 
 
         def gaussian_process_metamodel(useGower = True, acquisition_method = 'EI', evaluation_method = 'local_penalization', batch_size = 5, shuffle=False):
-            print(f'useGower:{useGower}, acquisition_method:{acquisition_method}, evaluation_method:{evaluation_method}, batch_size:{batch_size}, shuffle:{shuffle}')
+            print(f'\nuseGower:{useGower}, acquisition_method:{acquisition_method}, evaluation_method:{evaluation_method}, batch_size:{batch_size}, shuffle:{shuffle}')
             previous_input = np.asarray(self.X_history)
             previous_objective = np.asarray([value[1] for value in self.Y_history]).reshape(-1, 1)
             if shuffle:
@@ -1014,14 +1034,13 @@ class SLT_Optimization():
                 normalize_Y = True,
                 exact_feval = True,
                 acquisition_optimizer_type = 'lbfgs',
-                evaluator_type = 'local_penalization',
+                evaluator_type = evaluation_method,
                 batch_size = batch_size,
                 maximize = self.maximize,
                 de_duplication = True,
                 Gower = useGower,
                 noise_var = 0)
             X = [[int(round(x[0])), int(round(x[1])), int(round(x[2])), int(round(x[3])), x[4], x[5]] for x in self.metamodel.suggest_next_locations()]
-            print(X)
             if shuffle:
                 X = self.unshuffle_indices(X, shuffle_patterns)
             if self.X is None:
@@ -1030,17 +1049,60 @@ class SLT_Optimization():
                 self.update(self.X, X)
             return None  
 
-        for _ in range(3):
-            gaussian_process_metamodel(True, 'EI', 'sequential', 1, True)
-            gaussian_process_metamodel(True, 'MPI', 'sequential', 1, True)
-            gaussian_process_metamodel(True, 'LCB', 'sequential', 1, True)
-        gaussian_process_metamodel(True, 'EI', 'local_penalization', 3)
-        gaussian_process_metamodel(True, 'MPI', 'local_penalization', 3)
-        gaussian_process_metamodel(True, 'LCB', 'local_penalization', 3)
-        gaussian_process_metamodel(True, 'EI', 'thompson_sampling', 3)
-        gaussian_process_metamodel(True, 'MPI', 'thompson_sampling', 3)
-        gaussian_process_metamodel(True, 'LCB', 'thompson_sampling', 3)
-        print('self.X', self.X)
+        def get_configurations(acquisition_approaches = ['EI'], batch_size = 5):
+            suggested = []
+            configurations = np.asarray(self.X_unexplored)
+            for acquisition_method in acquisition_approaches:
+                gaussian_process_metamodel(True, acquisition_method, 'local_penalization', batch_size, False)   # batch size must be greater than 1 to use the acquisition function with local penalization
+                self.metamodel.evaluator.acquisition.update_batches(None,None,None)
+                acquisition_values = self.metamodel.evaluator.acquisition.acquisition_function(configurations)
+                index_best = np.argmin(acquisition_values)
+                suggested.append(index_best) 
+                X_batch = configurations[index_best]
+                get = 1
+                L = GPyOpt.core.evaluators.batch_local_penalization.estimate_L(self.metamodel.evaluator.acquisition.model.model,self.metamodel.acquisition.space.get_bounds())
+                Min = self.metamodel.evaluator.acquisition.model.model.Y.min()
+                while get < batch_size:
+                    self.metamodel.evaluator.acquisition.update_batches(X_batch,L,Min)
+                    acquisition_values = self.metamodel.evaluator.acquisition.acquisition_function(configurations)
+                    index_best = np.argmin(acquisition_values)
+                    suggested.append(index_best) 
+                    new_sample = configurations[index_best]
+                    X_batch = np.vstack((X_batch,new_sample))
+                    get += 1
+                #gaussian_process_metamodel(True, acquisition_method, batch_method, 1, False)
+                #acquisition_values = self.metamodel.acquisition.acquisition_function(configurations)
+                #best_indices = sorted([index for index, value in enumerate(acquisition_values, start=0)], reverse=True)[:batch_size]
+                #print(best_indices)
+                #suggested.extend(best_indices) 
+                print(suggested)
+            suggested = list(dict.fromkeys(suggested))  # remove duplicates
+            print(suggested)
+            suggestions = [self.X_unexplored[index] for index in suggested]
+            self.S_unexplored = [self.S_unexplored[index] for index in range(len(self.S_unexplored)) if index not in suggested]
+            self.E_unexplored = [self.E_unexplored[index] for index in range(len(self.E_unexplored)) if index not in suggested]
+            self.X_unexplored = [self.X_unexplored[index] for index in range(len(self.X_unexplored)) if index not in suggested]
+            self.Y_unexplored = [self.Y_unexplored[index] for index in range(len(self.Y_unexplored)) if index not in suggested]
+            self.constraints_log_unexplored = [self.constraints_log_unexplored[index] for index in range(len(self.constraints_log_unexplored)) if index not in suggested]
+            return suggestions
+
+        # For trying out various approaches on the metamodel
+        #for _ in range(batch_size_per_approach):
+        #    gaussian_process_metamodel(True, 'EI', 'sequential', 1, True)
+        #    gaussian_process_metamodel(True, 'MPI', 'sequential', 1, True)
+        #    gaussian_process_metamodel(True, 'LCB', 'sequential', 1, True)
+        #gaussian_process_metamodel(True, 'EI', 'local_penalization', batch_size_per_approach)
+        #gaussian_process_metamodel(True, 'MPI', 'local_penalization', batch_size_per_approach)
+        #gaussian_process_metamodel(True, 'LCB', 'local_penalization', batch_size_per_approach)
+        #gaussian_process_metamodel(True, 'EI', 'thompson_sampling', batch_size_per_approach)
+        #gaussian_process_metamodel(True, 'MPI', 'thompson_sampling', batch_size_per_approach)
+        #gaussian_process_metamodel(True, 'LCB', 'thompson_sampling', batch_size_per_approach)
+
+        # For considering only known feasible configurations
+        self.X = get_configurations(acquisition_approaches = ['EI', 'MPI', 'LCB'], batch_size = batch_size_per_approach)
+        
+        for item in self.X:
+            print(item)
 
         # Precheck constraints prior to suggesting for evaluation
         # For unsatisfactory points, skip evaluation and compute penalized objective value
@@ -1071,11 +1133,11 @@ class SLT_Optimization():
         self.X_best_history = self.update(self.X_best_history, self.X_best)
         self.Y_best_history = self.update(self.Y_best_history, self.Y_best)
 
-        metamodel.plot_acquisition()
+        self.metamodel.plot_acquisition()
         self.write_data_to_spreadsheet(initial_batch=False)
         
         return None    
 
 thesis = SLT_Optimization(target_velocity = 44, payload_weight = 500, motor_angle = 5, beam_length_max = 80)
 #thesis.initial_batch(num_design = 1000, adjust_pitch=False)
-thesis.additional_batch(adjust_pitch=False)
+thesis.additional_batch(batch_size_per_approach = 10, adjust_pitch=False)

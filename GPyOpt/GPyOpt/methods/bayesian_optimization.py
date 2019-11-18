@@ -145,7 +145,7 @@ class BayesianOptimization(BO):
             if isinstance(kwargs['acquisition'], GPyOpt.acquisitions.AcquisitionBase):
                 self.acquisition = kwargs['acquisition']
                 self.acquisition_type = 'User defined acquisition used.'
-                print('Using an acquisition defined by the used.')
+                print('Using an acquisition defined by the user.')
             else:
                 self.acquisition = self._acquisition_chooser()
         else:
