@@ -5,12 +5,13 @@ import matplotlib
 import numpy as np
 import pathlib
 import time
+import copy
 import xlwings as xw
 np.set_printoptions(linewidth=200, precision=4)
 
 class SLT_Optimization():
     Datafolder = pathlib.Path(__file__).parents[2].joinpath('2---Data')
-    def __init__(self, target_velocity, payload_weight=500, motor_angle = 5, plane_index=0, beam_index = 0, plane_battery_cell = [3], beam_length_max=80):
+    def __init__(self, target_velocity, payload_weight=500, motor_angle = 5, plane_index=0, beam_index = 0, plane_battery_cell = [3], beam_length_max=80, maximize=True):
         '''
         S = simulated values
                 0 - 'lift'                      - intermediate between X and Y
@@ -77,7 +78,8 @@ class SLT_Optimization():
         self.Y_best_history = None
 
         # -----Others----------------------------------------
-        self.processed_points = 0
+        self.metamodel = None
+        self.maximize = maximize
         self.target_velocity = target_velocity   # km/hr input value
         self.payload_weight = payload_weight    # weight of payload in grams
         self.motor_angle = motor_angle  # angle of plane motor with respect to a flat wing (0° pitch)
@@ -85,14 +87,14 @@ class SLT_Optimization():
         self.beam = beam_index  # choice of beam is not an optimization variable (default is 0)
         self.plane_battery_cell = plane_battery_cell
         self.plane_data, self.beam_data, self.quad_battery_data, self.plane_battery_data, self.motor_data, self.propeller_data = self.load_component_info()
-        self.variables, self.X_invalid = self.define_variables(beam_length_max)
+        self.variables = self.define_variables(beam_length_max)
         self.space = GPyOpt.core.task.space.Design_space(self.variables)
         return None
     
     def load_component_info(self):
         componentFile = str(self.Datafolder) + '/MBO/components.xlsx'
         componentData = xw.Book(str(pathlib.PureWindowsPath(componentFile)))
-        print('Loading component information...\n')
+        print('\nLoading component information...\n')
         
         def _load_component(sheet_name):
             if sheet_name in ['quad_battery', 'plane_battery']:
@@ -134,7 +136,7 @@ class SLT_Optimization():
             print(f'    [{labels[index]}]')
             for item in data[index]:
                 print(item)
-                time.sleep(0.1)
+                time.sleep(0.05)
             print()
         componentData.close()
         return plane_data, beam_data, quad_battery_data, plane_battery_data, motor_data, propeller_data
@@ -159,12 +161,39 @@ class SLT_Optimization():
             {'name': 'distanceFromCenterline', 'type': 'continuous', 'domain': centerline_distance_range},  # connection point from center of fuselage
             {'name': 'beam_length', 'type': 'continuous', 'domain': beam_length_range},  # length of beam
             ]             
-        X_invalid = []
         print('    [Variables]')
         for variable in variables:
             print(variable)
             time.sleep(0.1)
-        return variables, X_invalid
+        return variables
+
+    def shuffle_indices(self, X):
+        if X is None:
+            X = self.X
+        discrete_indices = [index for index, variable in enumerate(self.variables, start=0) if variable['type'] == 'discrete']
+        shuffle_patterns = [None for dimensions in range(len(self.variables))]
+        for discrete_dimension in discrete_indices:
+            levels = self.variables[discrete_dimension]['domain']
+            shuffle_patterns[discrete_dimension] = list(levels) 
+            np.random.shuffle(shuffle_patterns[discrete_dimension])
+            for configuration in X:
+                original_index = levels.index(configuration[discrete_dimension])
+                shuffled_index = shuffle_patterns[discrete_dimension][original_index]
+                configuration[discrete_dimension] = levels[shuffled_index]
+        return X, shuffle_patterns
+
+    def unshuffle_indices(self, X, shuffle_patterns):
+        if X is None:
+            X = self.X
+            shuffle_patterns = None
+        discrete_indices = [index for index, variable in enumerate(self.variables, start=0) if variable['type'] == 'discrete']
+        for configuration in X:
+            for discrete_dimension in discrete_indices:
+                levels = self.variables[discrete_dimension]['domain']
+                shuffled_index = levels.index(configuration[discrete_dimension])
+                original_index = shuffle_patterns[discrete_dimension].index(shuffled_index)
+                configuration[discrete_dimension] = levels[original_index]
+        return X
 
     def get_max_weight(self):
         pitchFile = str(self.Datafolder) + '/CFD/Angle_of_Attack.xlsx'
@@ -173,7 +202,7 @@ class SLT_Optimization():
         return max_weight
 
     def estimate_values(self, X=None):
-        print('Preparing pitch estimates: ', end='')
+        print('\nPreparing pitch estimates: ', end='')
         pitchFile = str(self.Datafolder) + '/CFD/Angle_of_Attack.xlsx'
         pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
         max_weight = float(pitchData.sheets['Interface'].range('B2').value)
@@ -371,14 +400,15 @@ class SLT_Optimization():
     def process_actual_results(self, E=None, X=None, penalized_values=None, S=None):
         evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
         evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
-        print('Setting up evaluations...\n')
+        print('\nSetting up evaluations...\n')
         if X is None:
             X = self.X
             E = self.E
             penalized_values = [0 for _ in self.X]
+        active_rows = evaluationsData.sheets['current'].range('A1').end('down').row
+        evaluationsData.sheets['current'].range(f'A2:N{active_rows}').clear_contents()    
         batch_size = len(X)
         write_values = [[None for _ in range(10)] for configuration in range(batch_size)]
-
         for configuration in range(batch_size):
             if penalized_values[configuration] != 0:
                 write_values[configuration][0:2] = ['None', 'None']
@@ -407,7 +437,7 @@ class SLT_Optimization():
         return S, Y
 
     def post_check_constraints(self, S=None, E=None, X=None, Y=None, constraints_log=None):
-        print('Conducting post-simulation constraint checks... (not redundant with preliminary checks)\n')
+        print('\nConducting post-simulation constraint checks... (not redundant with preliminary checks)\n')
         if X is None:
             S = self.S
             E = self.E
@@ -498,12 +528,12 @@ class SLT_Optimization():
     def adjust_pitch(self, S=None, E=None):
         pitchFile = str(self.Datafolder) + '/CFD/Angle_of_Attack.xlsx'
         pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
-        print(f'Determining pitch adjustments (simulated lift must be within 5% of the weight)...\n')
+        print(f'\nDetermining pitch adjustments (simulated lift must be within 5% of the weight)...\n')
         if S is None:
             S = self.S
             E = self.E
-        old_S = S.copy()   
-        old_E = E.copy()       
+        old_S = copy.deepcopy(S)
+        old_E = copy.deepcopy(E)
         above_below = ['above', 'below']
         factor_shrink_rate = 3.0        # affects how rapidly the adjustment factor appraoches 1 (can be any positive number)
         min_adjustment_factor = 0.1     # minimum value for the adjustment factor (limit adjustment when difference is high)
@@ -543,30 +573,43 @@ class SLT_Optimization():
         evaluationsData.sheets['current'].range(f'C2:D{len(S)+2}').value = E
         evaluationsData.save()   
         print(f'The pitch of {len(adjusted_configurations)} configurations have been adjusted.')
-        return S, E, old_S, old_E
+        return S, E, old_S, old_E, adjusted_configurations
 
-    def reconcile_pitch(self, S, E, old_S, old_E):
+    def reconcile_pitch(self, S, E, old_S, old_E, adjusted_configurations):
+        print('\nFinalizing results with adjusted pitch...\n')
         if S is None:
             S = self.S
             E = self.E
+        above_below = ['above', 'below']
         for configuration in range(len(S)):
             pitch = float(E[configuration][0])
             old_pitch = float(old_E[configuration][0])
-            if pitch != old_pitch:
+            if configuration in adjusted_configurations:
+                drag = float(S[configuration][0])
                 lift = float(S[configuration][1])
+                old_drag = float(old_S[configuration][0])
+                old_lift = float(old_S[configuration][1])
                 weight = float(E[configuration][1])
+                old_percent_difference = float(100 * (old_lift - weight) / weight)
                 percent_difference = float(100 * (lift - weight) / weight)
                 if abs(percent_difference) > 5:
-                    print(f'#{configuration+1:2d}: !!! New simulated lift is {abs(percent_difference):5.2f}% {above_below[int(percent_difference<0)]} the calculated weight. Interpolating...')
-                    drag = float(S[configuration][0])
-                    old_drag = float(old_S[configuration][0])
-                    old_lift = float(old_S[configuration][1])
-                    S[configuration][1] = weight 
-                    S[configuration][0] = old_drag + (drag - old_drag) * (weight - old_lift) / (lift - old_lift)
-                    E[configuration][0] = old_pitch + (pitch - old_pitch) * (weight - old_lift) / (lift - old_lift)
-                    print(f'  ├──> Drag: {old_drag:5.2f} & {drag:5.2f}  ──> {S[configuration][0]:5.2f}\n')
-                    print(f'  ├──> Lift: {old_lift:5.2f} & {lift:5.2f}  ──> {S[configuration][1]:5.2f}\n')
-                    print(f'  └──> Pitch: {old_pitch:5.2f} & {pitch:5.2f}  ──> {E[configuration][0]:5.2f}\n')
+                    if (old_percent_difference < 0 < percent_difference) or (percent_difference < 0 < old_percent_difference):
+                        print(f'#{configuration+1:2d}: !!! New simulated lift is {abs(percent_difference):5.2f}% {above_below[int(percent_difference<0)]} the calculated weight. Interpolating...')
+                        S[configuration][1] = weight 
+                        S[configuration][0] = old_drag + (drag - old_drag) * (weight - old_lift) / (lift - old_lift)
+                        E[configuration][0] = old_pitch + (pitch - old_pitch) * (weight - old_lift) / (lift - old_lift)
+                        print(f'  ├──> Drag: {old_drag:5.2f} & {drag:5.2f}  ──> {S[configuration][0]:5.2f}')
+                        print(f'  ├──> Lift: {old_lift:5.2f} & {lift:5.2f}  ──> {S[configuration][1]:5.2f}')
+                        print(f'  └──> Pitch: {old_pitch:5.2f} & {pitch:5.2f}  ──> {E[configuration][0]:5.2f}')
+                    else:
+                        print(f'#{configuration+1:2d}: !!! Cannot interpolate. Choosing entry with smallest error...')
+                        if abs(percent_difference) < abs(old_percent_difference):
+                            D, L, P = drag, lift, pitch
+                        else:
+                            D, L, P = old_drag, old_lift, old_pitch
+                        print(f'  ├──> Drag: {D:5.2f}')
+                        print(f'  ├──> Lift: {L:5.2f}')
+                        print(f'  └──> Pitch: {P:5.2f}')
                 else:
                     print(f'#{configuration+1:2d}: OK. New simulated lift is {abs(percent_difference):5.2f}% {above_below[int(percent_difference<0)]} the calculated weight.')   
 
@@ -578,7 +621,11 @@ class SLT_Optimization():
             E = self.E_history
             X = self.X_history
             Y = self.Y_history
-        index_best = np.argmax(np.asarray(Y))
+        objective_value = np.asarray([value[1] for value in Y])
+        if self.maximize:
+            index_best = np.argmax(objective_value)
+        else:
+            index_best = np.argmin(objective_value)
         S_best = S[index_best]
         E_best = E[index_best]
         X_best = X[index_best]
@@ -632,49 +679,46 @@ class SLT_Optimization():
             print()
         return None
 
-    def tabulate_data(self, S=None, E=None, X=None, Y=None):
+    def tabulate_data(self, S=None, E=None, X=None, Y=None, startIndex=1, endIndex=0, header=True):
         if X is None:
             S = self.S
             E = self.E
             X = self.X
             Y = self.Y
-        print('┌────────┬──────────┬──────────┬──────────┬──────────┬───────┬───────────┬──────────────┬───────────────┬─────────────────────┬─────────────┬───────────┬───────────┐')
-        print('│ Design │   Drag   │   Lift   │   Pitch  │  Weight  │ Motor │ Propeller │ Quad battery │ Plane battery │ Centerline distance │ Beam length │ Endurance │ Objective │')
-        print('├────────┼──────────┼──────────┼──────────┼──────────┼───────┼───────────┼──────────────┼───────────────┼─────────────────────┼─────────────┼───────────┼───────────┤')
+        if header:
+            print('┌────────┬──────────┬──────────┬──────────┬──────────┬───────┬───────────┬──────────────┬───────────────┬─────────────────────┬─────────────┬───────────┬───────────┐')
+            print('│ Design │   Drag   │   Lift   │   Pitch  │  Weight  │ Motor │ Propeller │ Quad battery │ Plane battery │ Centerline distance │ Beam length │ Endurance │ Objective │')
+            print('├────────┼──────────┼──────────┼──────────┼──────────┼───────┼───────────┼──────────────┼───────────────┼─────────────────────┼─────────────┼───────────┼───────────┤')
         for index, point in enumerate(X, start=1):
-            if S[index-1][0] != 'None':
-                print(f'│  {index:3d}   '
-                    + f'│ {S[index-1][0]:7.2f}  '
-                    + f'│ {S[index-1][1]:7.2f}  '
-                    + f'│ {E[index-1][0]:7.2f}  '
-                    + f'│ {E[index-1][1]:7.2f}  '
-                    + f'│ {point[0]+1:3d}   '
-                    + f'│ {point[1]+1:4d}      '
-                    + f'│    {point[2]+1:5d}     '
-                    + f'│    {point[3]+1:5d}      '
-                    + f'│      {point[4]:8.2f}       '
-                    + f'│  {point[5]:8.2f}   '
-                    + f'│ {Y[index-1][0]:7.2f}   '
-                    + f'│ {Y[index-1][1]:7.2f}   │') 
-            else:
-                print(f'│  {index:3d}   '
-                    + f'│    None  '
-                    + f'│    None  '
-                    + f'│ {E[index-1][0]:7.2f}  '
-                    + f'│ {E[index-1][1]:7.2f}  '
-                    + f'│ {point[0]+1:3d}   '
-                    + f'│ {point[1]+1:4d}      '
-                    + f'│    {point[2]+1:5d}     '
-                    + f'│    {point[3]+1:5d}      '
-                    + f'│      {point[4]:8.2f}       '
-                    + f'│  {point[5]:8.2f}   '
-                    + f'│    None   '
-                    + f'│ {Y[index-1][1]:7.2f}   │')
-            time.sleep(0.1)
-        print('└────────┴──────────┴──────────┴──────────┴──────────┴───────┴───────────┴──────────────┴───────────────┴─────────────────────┴─────────────┴───────────┴───────────┘\n')
+            if startIndex > index:
+                continue
+            drag = '│    None  ' if S[index-1][0] == 'None' else f'│ {S[index-1][0]:7.2f}  '
+            lift = '│    None  ' if S[index-1][1] == 'None' else f'│ {S[index-1][1]:7.2f}  '
+            endurance = '│    None   ' if Y[index-1][0] == 'None' else f'│ {Y[index-1][0]:7.2f}   '
+            print(f'│  {index:3d}   '
+                + drag
+                + lift
+                + f'│ {E[index-1][0]:7.2f}  '
+                + f'│ {E[index-1][1]:7.2f}  '
+                + f'│ {point[0]+1:3d}   '
+                + f'│  {point[1]+1:4d}     '
+                + f'│   {point[2]+1:5d}      '
+                + f'│    {point[3]+1:5d}      '
+                + f'│      {point[4]:8.2f}       '
+                + f'│  {point[5]:8.2f}   '
+                + endurance
+                + f'│ {Y[index-1][1]:7.2f}   │') 
+            if endIndex == index:
+                break
+            time.sleep(0.05)
+        if endIndex > 0:
+            print('│   ...  │    ...   │    ...   │    ...   │    ...   │  ...  │    ...    │      ...     │      ...      │          ...        │      ...    │    ...    │    ...    │')
+        else:
+            print('└────────┴──────────┴──────────┴──────────┴──────────┴───────┴───────────┴──────────────┴───────────────┴─────────────────────┴─────────────┴───────────┴───────────┘\n')
         return None
 
     def write_data_to_spreadsheet(self, initial_batch=False):
+        print('\nSaving data to spreadsheet...\n')
 
         def update_sheet(sheet_name):
             if sheet_name == 'design':
@@ -682,31 +726,31 @@ class SLT_Optimization():
                 E = self.E_design
                 X = self.X_design
                 Y = self.Y_design
-                log = self.self.constraints_log_design
+                log = self.constraints_log_design
             elif sheet_name == 'best_design':
-                S = self.S_best_design
-                E = self.E_best_design
-                X = self.X_best_design
-                Y = self.Y_best_design
+                S = [self.S_best_design]
+                E = [self.E_best_design]
+                X = [self.X_best_design]
+                Y = [self.Y_best_design]
                 log = None
             elif sheet_name == 'current':
                 S = self.S
                 E = self.E
                 X = self.X
                 Y = self.Y
-                log = self.self.constraints_log
+                log = self.constraints_log
             elif sheet_name == 'current_best':
-                S = self.S_best
-                E = self.E_best
-                X = self.X_best
-                Y = self.Y_best
+                S = [self.S_best]
+                E = [self.E_best]
+                X = [self.X_best]
+                Y = [self.Y_best]
                 log = None
             elif sheet_name == 'all':
                 S = self.S_history
                 E = self.E_history
                 X = self.X_history
                 Y = self.Y_history
-                log = self.self.constraints_log_history
+                log = self.constraints_log_history
             elif sheet_name == 'all_best':
                 S = self.S_best_history
                 E = self.E_best_history
@@ -716,27 +760,23 @@ class SLT_Optimization():
             evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
             evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
             active_rows = evaluationsData.sheets[sheet_name].range('A1').end('down').row
-            evaluationsData.sheets[sheet_name].range(f'A2:K{active_rows}').clear_contents()
-            if 'best' not in sheet_name or 'all_best' in sheet_name:
-                for entry in range(len(X)):
-                    row = entry + 2
-                    evaluationsData.sheets[sheet_name].range(f'A{row}:B{row}').value = S[entry]
-                    evaluationsData.sheets[sheet_name].range(f'C{row}:D{row}').value = E[entry]
-                    evaluationsData.sheets[sheet_name].range(f'E{row}:H{row}').value = [int(round(X[entry][value]+1)) for value in range(4)] #convert to 1-index for user
-                    evaluationsData.sheets[sheet_name].range(f'I{row}:J{row}').value = [float(X[entry][value]) for value in [4, 5]]
-                    evaluationsData.sheets[sheet_name].range(f'K{row}:L{row}').value = Y[entry]
-                    if log is not None:
-                        evaluationsData.sheets[sheet_name].range(f'M{row}:N{row}').value = log[entry]
-                evaluationsData.save()   
-            elif X is not None:
-                evaluationsData.sheets[sheet_name].range('A2:B2').value = S
-                evaluationsData.sheets[sheet_name].range('C2:D2').value = E
-                evaluationsData.sheets[sheet_name].range('E2:H2').value = [int(round(X[value]+1)) for value in range(4)] #convert to 1-index for user
-                evaluationsData.sheets[sheet_name].range('I2:J2').value = [float(X[value]) for value in [4, 5]]
-                evaluationsData.sheets[sheet_name].range('K2:L2').value = Y
-                evaluationsData.save()   
+            evaluationsData.sheets[sheet_name].range(f'A2:N{active_rows}').clear_contents()
+            rows = len(X)
+            if log is not None:
+                columns = 14
             else:
-                pass
+                columns = 12
+            write_values = [[None for _ in range(columns)] for entry in range(rows)]
+            for entry in range(len(X)):
+                write_values[entry][0:2] = S[entry]
+                write_values[entry][2:4] = E[entry]
+                write_values[entry][4:8] = [int(round(X[entry][value]+1)) for value in range(4)] #convert to 1-index for user
+                write_values[entry][8:10] = [float(X[entry][value]) for value in [4, 5]] 
+                write_values[entry][10:12] = Y[entry]
+                if log is not None:
+                    write_values[entry][12:14] = log[entry]
+            evaluationsData.sheets[sheet_name].range(f'A{2}:N{rows+2}').value = write_values
+            evaluationsData.save()   
 
         if initial_batch:
             update_sheet('design')
@@ -750,45 +790,70 @@ class SLT_Optimization():
         return None
 
     def load_previous_data_from_spreadsheet(self):
-
+        print('\nLoading data from spreadsheet...\n')
         def load_sheet(sheet_name):
             evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
             evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))  
             active_rows = evaluationsData.sheets[sheet_name].range('A1').end('down').row
-            S = [evaluationsData.sheets[sheet_name].range(f'A{row}:B{row}').value for row in range(2, active_rows+1)]
-            E = [evaluationsData.sheets[sheet_name].range(f'C{row}:D{row}').value for row in range(2, active_rows+1)]
-            X = [[int(value) for value in evaluationsData.sheets[sheet_name].range(f'E{row}:H{row}').value]
-                 + evaluationsData.sheets[sheet_name].range(f'I{row}:J{row}').value for row in range(2, active_rows+1)]
-            Y = [evaluationsData.sheets[sheet_name].range(f'K{row}:L{row}').value for row in range(2, active_rows+1)]
-            log = [evaluationsData.sheets[sheet_name].range(f'M{row}:N{row}').value for row in range(2, active_rows+1)]
+            S = [None for entry in range(active_rows-1)]
+            E = [None for entry in range(active_rows-1)]
+            X = [None for entry in range(active_rows-1)]
+            Y = [None for entry in range(active_rows-1)]
+            if evaluationsData.sheets[sheet_name].range('A2').value is None:    # check if blank
+                return None
+            if 'best' in sheet_name:
+                load_values = evaluationsData.sheets[sheet_name].range(f'A2:L{active_rows}').value
+                if len(load_values) != active_rows-1:   # check if just one row and convert to 2-D array
+                    load_values = [load_values]
+            else:
+                load_values = evaluationsData.sheets[sheet_name].range(f'A2:N{active_rows}').value
+                log = [None for entry in range(active_rows-1)]
+            print(f'{active_rows-1} entries from "{sheet_name}": ', end='')
+            for entry in range(active_rows-1):
+                if active_rows > 10:
+                    if entry in [int(round((step+1)*(active_rows-1)/10)) for step in range(10)]:
+                        print('█', end='')
+                S[entry] = load_values[entry][0:2]
+                E[entry] = load_values[entry][2:4]
+                X[entry] = [int(round(value))-1 for value in load_values[entry][4:8]]
+                X[entry].extend(load_values[entry][8:10])
+                Y[entry] = load_values[entry][10:12]
+                if 'best' not in sheet_name:
+                    log[entry] = load_values[entry][12:14]
+            print()
+            if len(S) > 100:
+                self.tabulate_data(S, E, X, Y, endIndex=5)
+                self.tabulate_data(S, E, X, Y, startIndex=len(S)-20, header=False)
+            else:
+                self.tabulate_data(S, E, X, Y)
             if sheet_name == 'design':
                 self.S_design = S
                 self.E_design = E
                 self.X_design = X
                 self.Y_design = Y
-                self.self.constraints_log_design = log
+                self.constraints_log_design = log
             elif sheet_name == 'best_design':
-                self.S_best_design = S
-                self.E_best_design = E
-                self.X_best_design = X
-                self.Y_best_design = Y
+                self.S_best_design = S[0]
+                self.E_best_design = E[0]
+                self.X_best_design = X[0]
+                self.Y_best_design = Y[0]
             elif sheet_name == 'current':
                 self.S = S
                 self.E = E
                 self.X = X
                 self.Y = Y
-                self.self.constraints_log = log
+                self.constraints_log = log
             elif sheet_name == 'current_best':
-                self.S_best = S
-                self.E_best = E
-                self.X_best = X
-                self.Y_best = Y
+                self.S_best = S[0]
+                self.E_best = E[0]
+                self.X_best = X[0]
+                self.Y_best = Y[0]
             elif sheet_name == 'all':
                 self.S_history = S
                 self.E_history = E
                 self.X_history = X
                 self.Y_history = Y
-                self.self.constraints_log_history = log
+                self.constraints_log_history = log
             elif sheet_name == 'all_best':
                 self.S_best_history = S
                 self.E_best_history = E
@@ -817,7 +882,7 @@ class SLT_Optimization():
         return None
 
     def generate_experimental_design(self, num_design):
-        print('Generating experimental design...\n')          
+        print('\nGenerating experimental design...\n')          
         hammerseley = chaospy.distributions.sampler.sequences.hammersley
         base = hammerseley.create_hammersley_samples(num_design, dim=len(self.variables), burnin=-1, primes=()) #numpy array
         motor_selections = np.rint(base[0, :] * (len(self.motor_data)-1)).astype(int).tolist()
@@ -893,11 +958,10 @@ class SLT_Optimization():
         # Recheck constraints after obtaining lift and drag in simulations
         # For unsatifactory configurations, significantly penalize the objective value (not as severe as pre-check since base is nonzero from simulation results)
         self.constraints_log_design, self.Y_design = self.post_check_constraints(self.S_design, self.E_design, self.X_design, self.Y_design, self.constraints_log_design)
-        self.tabulate_data(self.S_design, self.E_design, self.X_design, self.Y_design)
         if adjust_pitch:
-            self.S_design, self.E_design, old_S, old_E = self.adjust_pitch(self.S_design, self.E_design)
+            self.S_design, self.E_design, old_S, old_E, adjusted_configurations = self.adjust_pitch(self.S_design, self.E_design)
             self.S_design, self.Y_design = self.process_actual_results(self.E_design, self.X_design, penalized_values, self.S_design)
-            self.S_design, self.E_design = self.reconcile_pitch(self.S_design, self.E_design, old_S, old_E)
+            self.S_design, self.E_design = self.reconcile_pitch(self.S_design, self.E_design, old_S, old_E, adjusted_configurations)
             self.constraints_log_design, self.Y_design = self.post_check_constraints(self.S_design, self.E_design, self.X_design, self.Y_design, self.constraints_log_design)
         self.tabulate_data(self.S_design, self.E_design, self.X_design, self.Y_design)
 
@@ -907,9 +971,9 @@ class SLT_Optimization():
         self.S_best, self.E_best, self.X_best, self.Y_best = self.S_best_design, self.E_best_design, self.X_best_design, self.Y_best_design                                                         # Initialize current best value
         self.S_best_history, self.E_best_history, self.X_best_history, self.Y_best_history = [self.S_best_design], [self.E_best_design], [self.X_best_design], [self.Y_best_design]                 # Initialize history of best values
 
-        #self.write_data_to_spreadsheet(initial_batch=True)
+        self.write_data_to_spreadsheet(initial_batch=True)
 
-    def additional_batch(self, evaluations_per_batch = 5, adjust_pitch=False):
+    def additional_batch(self, adjust_pitch=False):
         self.load_previous_data_from_spreadsheet()
         print(f'\n\n\nNote:\n The target velocity is {float(self.target_velocity):.2f}kph. Meanwhile, pitch estimates are made using data at 45kph.\n\n')
         print(f'''
@@ -918,41 +982,87 @@ class SLT_Optimization():
         {'-'*50}
         ''')
         time.sleep(1.0)
-        metamodel = GPyOpt.methods.BayesianOptimization(
-            f = None, 
-            domain = self.variables,
-            constraints = None,
-            cost_withGradients = None,
-            model_type = 'GP',
-            X = np.asarray(self.X_history),
-            Y = np.asarray(self.Y_history).reshape(-1, 1),  # reshape into 2d array (column)
-            acquisition_type = 'EI',
-            normalize_Y = True,
-            exact_feval = False,
-            acquisition_optimizer_type = 'lbfgs',
-            evaluator_type = 'local_penalization',
-            batch_size = evaluations_per_batch,
-            maximize = False,
-            de_duplication = True,
-            Gower = False,
-            noise_var = 0)
+        # (From GPyOpt bayesian_optimization docstring)
+        #:acquisition_type: type of acquisition function to use.
+        #    - 'EI', expected improvement.
+        #    - 'EI_MCMC', integrated expected improvement (requires GP_MCMC model).
+        #    - 'MPI', maximum probability of improvement.
+        #    - 'MPI_MCMC', maximum probability of improvement (requires GP_MCMC model).
+        #    - 'LCB', GP-Lower confidence bound.
+        #    - 'LCB_MCMC', integrated GP-Lower confidence bound (requires GP_MCMC model).
+        #:param evaluator_type: determines the way the objective is evaluated (all methods are equivalent if the batch size is one)
+        #    - 'sequential', sequential evaluations.
+        #    - 'random': synchronous batch that selects the first element as in a sequential policy and the rest randomly.
+        #    - 'local_penalization': batch method proposed in (Gonzalez et al. 2016).
+        #    - 'thompson_sampling': batch method using Thompson sampling. 
+
+        def gaussian_process_metamodel(useGower = True, acquisition_method = 'EI', evaluation_method = 'local_penalization', batch_size = 5, shuffle=False):
+            print(f'useGower:{useGower}, acquisition_method:{acquisition_method}, evaluation_method:{evaluation_method}, batch_size:{batch_size}, shuffle:{shuffle}')
+            previous_input = np.asarray(self.X_history)
+            previous_objective = np.asarray([value[1] for value in self.Y_history]).reshape(-1, 1)
+            if shuffle:
+                previous_input, shuffle_patterns = self.shuffle_indices(previous_input)
+            self.metamodel = GPyOpt.methods.BayesianOptimization(
+                f = None, 
+                domain = self.variables,
+                constraints = None,
+                cost_withGradients = None,
+                model_type = 'GP',
+                X = previous_input,
+                Y = previous_objective,  # reshape into 2d array (column)
+                acquisition_type = acquisition_method,
+                normalize_Y = True,
+                exact_feval = True,
+                acquisition_optimizer_type = 'lbfgs',
+                evaluator_type = 'local_penalization',
+                batch_size = batch_size,
+                maximize = self.maximize,
+                de_duplication = True,
+                Gower = useGower,
+                noise_var = 0)
+            X = [[int(round(x[0])), int(round(x[1])), int(round(x[2])), int(round(x[3])), x[4], x[5]] for x in self.metamodel.suggest_next_locations()]
+            print(X)
+            if shuffle:
+                X = self.unshuffle_indices(X, shuffle_patterns)
+            if self.X is None:
+                self.X = X
+            else:
+                self.update(self.X, X)
+            return None  
+
+        for _ in range(3):
+            gaussian_process_metamodel(True, 'EI', 'sequential', 1, True)
+            gaussian_process_metamodel(True, 'MPI', 'sequential', 1, True)
+            gaussian_process_metamodel(True, 'LCB', 'sequential', 1, True)
+        gaussian_process_metamodel(True, 'EI', 'local_penalization', 3)
+        gaussian_process_metamodel(True, 'MPI', 'local_penalization', 3)
+        gaussian_process_metamodel(True, 'LCB', 'local_penalization', 3)
+        gaussian_process_metamodel(True, 'EI', 'thompson_sampling', 3)
+        gaussian_process_metamodel(True, 'MPI', 'thompson_sampling', 3)
+        gaussian_process_metamodel(True, 'LCB', 'thompson_sampling', 3)
+        print('self.X', self.X)
+
         # Precheck constraints prior to suggesting for evaluation
         # For unsatisfactory points, skip evaluation and compute penalized objective value
-        self.X = [[int(round(x[0])), int(round(x[1])), int(round(x[2])), int(round(x[3])), x[4], x[5]] for x in metamodel.suggest_next_locations()]
         self.constraints_log, penalized_values, self.E = self.pre_check_constraints(self.X)
         self.S, self.Y = self.process_actual_results(self.E, self.X, penalized_values)
 
         # Recheck constraints after obtaining lift and drag in simulations
         # For unsatifactory configurations, significantly penalize the objective value (not as severe as pre-check since base is nonzero from simulation results)
         self.constraints_log, self.Y = self.post_check_constraints(self.S, self.E, self.X, self.Y, self.constraints_log)
-        self.tabulate_data(self.S_design, self.E_design, self.X_design, self.Y_design)
+        if adjust_pitch:
+            self.S, self.E, old_S, old_E, adjusted_configurations = self.adjust_pitch(self.S, self.E)
+            self.S, self.Y = self.process_actual_results(self.E, self.X, penalized_values, self.S)
+            self.S, self.E = self.reconcile_pitch(self.S, self.E, old_S, old_E, adjusted_configurations)
+            self.constraints_log, self.Y = self.post_check_constraints(self.S, self.E, self.X, self.Y, self.constraints_log)
+        self.tabulate_data(self.S, self.E, self.X, self.Y)
 
         # Update history
         self.S_history = self.update(self.S_history, self.S)
         self.E_history = self.update(self.E_history, self.E)
         self.X_history = self.update(self.X_history, self.X)
         self.Y_history = self.update(self.Y_history, self.Y)
-        self.constraints_log_history = self.update(self.self.constraints_log_history, self.constraints_log)
+        self.constraints_log_history = self.update(self.constraints_log_history, self.constraints_log)
 
         # Update history of best configurations per iteration
         self.S_best, self.E_best, self.X_best, self.Y_best = self.get_best_values(self.S_history, self.E_history, self.X_history, self.Y_history)
@@ -962,12 +1072,10 @@ class SLT_Optimization():
         self.Y_best_history = self.update(self.Y_best_history, self.Y_best)
 
         metamodel.plot_acquisition()
+        self.write_data_to_spreadsheet(initial_batch=False)
         
         return None    
 
 thesis = SLT_Optimization(target_velocity = 44, payload_weight = 500, motor_angle = 5, beam_length_max = 80)
-thesis.initial_batch(num_design = 100, adjust_pitch=True)
-#thesis.additional_batch(evaluations_per_batch = 20)
-#thesis.load_previous_data_from_spreadsheet()
-#thesis.S_design, thesis.E_design = thesis.adjust_pitch(thesis.S_design, thesis.E_design)
-#thesis.write_data_to_spreadsheet()
+#thesis.initial_batch(num_design = 1000, adjust_pitch=False)
+thesis.additional_batch(adjust_pitch=False)

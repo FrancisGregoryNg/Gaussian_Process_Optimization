@@ -113,18 +113,6 @@ class Stationary(Kern):
 
         K(X, X2) = K_of_r((X-X2)**2)
         """
-        def print_diagnose(X, X2, **kwargs):
-            print(X)
-            print(X2)
-            for array_name in kwargs:
-                array = kwargs[array_name]
-                print(array_name)
-                print(array)
-                if X.shape == X2.shape:
-                    eigenvalues = np.linalg.eigvals(array)
-                print(eigenvalues)
-                print()
-
         if self.Gower and (self.space is not None):
             const_dims = self.space.get_continuous_dims()
             disc_dims = self.space.get_discrete_dims()
@@ -132,23 +120,20 @@ class Stationary(Kern):
             numDims = X.shape[1]
             if X2 is None:
                 X2 = X 
-            '''
-            Somehow, X2 is another 2D array (multiple points instead of just one). OTherwise, the below handles a 1-D X2.
-            r_const = np.sum(abs(X[:, const_dims] - X2[const_dims]) / lengthscale, axis = 1) # Continuous Difference
-            r_disc = np.sum(X[:, disc_dims] != X2[disc_dims], axis = 1)  # Discrete Dissimilarity
-            '''
-            #r_const = np.sum(abs(X[:, np.newaxis, const_dims] - X2[np.newaxis, :, const_dims]) / lengthscale, axis = 2) # Continuous Difference
-            #r_disc = np.sum(X[:, np.newaxis, disc_dims] != X2[np.newaxis, :, disc_dims], axis = 2)  # Discrete Dissimilarity
-            #r = (r_const + r_disc) #/ numDims
 
-            r_const = np.sum(abs(X[:, np.newaxis, const_dims] - X2[np.newaxis, :, const_dims]) / lengthscale, axis = 2) # Continuous Difference
-            r_disc = np.sum(X[:, np.newaxis, disc_dims] != X2[np.newaxis, :, disc_dims], axis = 2)  # Discrete Dissimilarity
-            r = (r_const + r_disc) #/ numDims
-            K_const = self.K_of_r(r_const)
-            K_disc = self.K_of_r(r_disc)
-            K_Gower = K_const * K_disc
-            #print_diagnose(X, X2, K_const = K_const, K_disc = K_disc, K_Gower = K_Gower)
-            kernel = K_Gower
+            K_1D = [None for dim in range(numDims)]
+            for index, const_dim in enumerate(const_dims, start=0):
+                r = abs(X[:, np.newaxis, const_dim] - X2[np.newaxis, :, const_dim]) / lengthscale[index] # Continuous Difference
+                K_1D[const_dim] = self.K_of_r(r)
+
+            for disc_dim in disc_dims:
+                r = (X[:, np.newaxis, disc_dim] != X2[np.newaxis, :, disc_dim]).astype(int) # Discrete Dissimilarity
+                K_1D[disc_dim] = self.K_of_r(r)
+
+            kernel = K_1D[0]
+            for dim in range(numDims-1):    # multiply each 1-dimensional kernel  
+                kernel = kernel * K_1D[dim+1]
+
         else:
             r = self._scaled_dist(X, X2)
             kernel = self.K_of_r(r)

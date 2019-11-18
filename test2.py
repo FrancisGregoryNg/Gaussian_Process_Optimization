@@ -1,4 +1,5 @@
 import GPyOpt
+import chaospy
 import matplotlib
 import math
 from mpl_toolkits.mplot3d import Axes3D
@@ -78,7 +79,7 @@ def plot_evaluated_points(X, Y, X_design, Y_design, x_minimum=0, y_minimum=0):
     for index in range(num_discrete):
         start = index * resolution
         end = (index + 1) * resolution
-        xyz[start:end, 0] = np.linspace(1, 10, resolution)
+        xyz[start:end, 0] = np.linspace(0, 1, resolution)
         xyz[start:end, 1] *= index + 1
         xyz[start:end, 2] = np.asarray([equation(x[0], x[1]) for x in xyz[start:end, [0, 1]]]).reshape(resolution)
     #    ax_mixed.plot(xs = xyz[start:end, 0], ys = xyz[start:end, 1], zs = xyz[start:end, 2])
@@ -153,22 +154,32 @@ def compare_with_actual(problem, variables):
 
 def plot_convergence(Y_data):
     X = [x for x in range(1, len(Y_data)+1)]
-    Y = [y*60 for y in Y_data]
+    Y = [y for y in Y_data]
     convergence_fig = matplotlib.pyplot.figure(figsize=(10, 5))
     ax = convergence_fig.add_subplot(1, 1, 1)
     title = 'Convergence Plot'
     ax.set_title(title, fontweight = 550, fontsize = 'large')
-    ax.plot(X, Y, 'b', marker='o', s=50) 
+    ax.plot(X, Y, 'b', marker='o') 
     ax.set_xlabel('Batch Iteration')
-    ax.set_ylabel('Endurance Estimate (minutes)')
+    ax.set_ylabel('Objective Value')
     return None
+
+def generate_experimental_design(num_design):
+    print('Generating experimental design...\n')          
+    hammerseley = chaospy.distributions.sampler.sequences.hammersley
+    base = hammerseley.create_hammersley_samples(num_design, dim=2, burnin=-1, primes=()) #numpy array
+    x = (base[0, :] * 1).tolist()
+    selection_index = np.rint(base[1, :] * 9 + 1).astype(int).tolist()
+    design = np.asarray([[x[design], selection_index[design]] for design in range(num_design)])
+    return design
 
 space_mixed_variables = \
     [{'name': 'x', 'type': 'continuous', 'domain':(0,1)},
      {'name': 'selection_index', 'type': 'discrete', 'domain': (1,2,3,4,5,6,7,8,9,10)}]     
 
-space_mixed = GPyOpt.core.task.space.Design_space(space_mixed_variables)
-experiment_design_mixed_X = GPyOpt.experiment_design.LatinMixedDesign(space_mixed).get_samples(20)
+#space_mixed = GPyOpt.core.task.space.Design_space(space_mixed_variables)
+#experiment_design_mixed_X = GPyOpt.experiment_design.LatinMixedDesign(space_mixed).get_samples(20)
+experiment_design_mixed_X = generate_experimental_design(200)
 experiment_design_mixed_Y = []
 for x, selection_index in experiment_design_mixed_X:
     Y = equation(x, selection_index)
@@ -177,7 +188,7 @@ experiment_design_mixed_Y = np.asarray(experiment_design_mixed_Y)
 #plot_experiment_design_mixed(experiment_design_mixed_X)
 X_values_mixed = experiment_design_mixed_X
 Y_values_mixed = experiment_design_mixed_Y
-numIterations_mixed = 10
+numIterations_mixed = 1
 
 X_initial_values_mixed = X_values_mixed
 Y_initial_values_mixed = Y_values_mixed
@@ -200,10 +211,10 @@ for step in range(numIterations_mixed):
         exact_feval = False,
         acquisition_optimizer_type = 'lbfgs',
         evaluator_type = 'local_penalization',
-        batch_size = 20,
+        batch_size = 1,
         maximize = False,
         de_duplication = True,
-        Gower = False,
+        Gower = True,
         noise_var = 0)
     x_next_mixed = mixed_problem.suggest_next_locations()
     y_next_mixed = []
@@ -220,6 +231,7 @@ for step in range(numIterations_mixed):
     #mixed_problem.plot_convergence()
     best_x.append(mixed_problem.x_opt)
     best_fx.append(mixed_problem.fx_opt)
+    
 
 best_x = np.asarray(best_x)
 best_fx = np.asarray(best_fx)
@@ -233,7 +245,7 @@ print('Y_initial_best', Y_initial_best)
 print('Located optimum:', mixed_problem.x_opt)
 print('Value:', mixed_problem.fx_opt)
 
-plot_convergence(Y_values_mixed)
+plot_convergence(best_fx)
 
 #These can be used to compare with x_opt and fx_opt to check consistency.
 #print('Located optimum:', X_values_mixed[np.argmin(Y_values_mixed)])
