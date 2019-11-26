@@ -10,7 +10,7 @@ import xlwings as xw
 np.set_printoptions(linewidth=200, precision=4)
 
 class SLT_Optimization():
-    Datafolder = pathlib.Path(__file__).parents[2].joinpath('2---Data')
+    
     def __init__(self, target_velocity, payload_weight=500, motor_angle = 5, plane_index=0, beam_index = 0, plane_battery_cell = [3], beam_length_max=80, maximize=True):
         '''
         S = simulated values
@@ -85,6 +85,7 @@ class SLT_Optimization():
         self.constraints_log_unexplored = []
 
         # -----Others----------------------------------------
+        self.Datafolder = pathlib.Path(__file__).parents[2].joinpath('2---Data')
         self.metamodel = None
         self.maximize = maximize
         self.target_velocity = target_velocity   # km/hr input value
@@ -94,6 +95,7 @@ class SLT_Optimization():
         self.beam = beam_index  # choice of beam is not an optimization variable (default is 0)
         self.plane_battery_cell = plane_battery_cell
         self.plane_data, self.beam_data, self.quad_battery_data, self.plane_battery_data, self.motor_data, self.propeller_data = self.load_component_info()
+        self.quad_to_plane_battery_index, self.plane_to_quad_battery_index = self.battery_index_conversion()
         self.variables = self.define_variables(beam_length_max)
         self.space = GPyOpt.core.task.space.Design_space(self.variables)
         return None
@@ -147,6 +149,19 @@ class SLT_Optimization():
             print()
         componentData.close()
         return plane_data, beam_data, quad_battery_data, plane_battery_data, motor_data, propeller_data
+
+    def battery_index_conversion(self):
+        quad_to_plane_battery_index = []
+        plane_index = 0
+        for quad_index in range(len(self.quad_battery_data)):
+            if int(round(self.plane_battery_data[plane_index]['index']))-1 == quad_index:
+                quad_to_plane_battery_index.append(plane_index)
+                if plane_index < len(self.plane_battery_data)-1:
+                    plane_index += 1 
+            else:
+                quad_to_plane_battery_index.append(None)
+        plane_to_quad_battery_index = [int(round(plane_battery['index']))-1 for plane_battery in self.plane_battery_data]
+        return quad_to_plane_battery_index, plane_to_quad_battery_index
 
     def define_variables(self, beam_length_max=None):
         plane = self.plane_data[self.plane]
@@ -288,83 +303,87 @@ class SLT_Optimization():
             propeller = self.propeller_data[propeller_index]
             quad_battery = self.quad_battery_data[quad_battery_index]
             plane_battery = self.plane_battery_data[plane_battery_index]
-            print(f'#{configuration+1:2d}: [{X[configuration][0]+1:3d} {X[configuration][1]+1:3d}' +
-                f'{X[configuration][2]+1:4d} {X[configuration][3]+1:4d} {X[configuration][4]:7.2f}' +
-                f'{X[configuration][5]:7.2f}]')
+            print(f'#{configuration+1:2d}: [{X[configuration][0]+1:3d} {X[configuration][1]+1:3d}'
+                + f'{X[configuration][2]+1:4d} {X[configuration][3]+1:4d} {X[configuration][4]:7.2f}'
+                + f'{X[configuration][5]:7.2f}]: Pitch = {pitch_estimates[configuration]:.2f}, '
+                + f'Weight = {weight[configuration]:.2f}') 
             # motor-propeller compatibility
             if propeller_index not in motor['propeller']:
                 add_log(configuration, 'Incompatible propeller. ')
                 add_penalty(configuration, -1)
+            # physical clashing
+            minimumFuselageDistance = plane['connection_min'] + (propeller['diameter'] * 2.54 / 2) 
+            if distanceFromCenterline < minimumFuselageDistance:
+                distanceCorrection = (distanceFromCenterline - minimumFuselageDistance) / minimumFuselageDistance
+                add_log(configuration, f'Propellers clash with fuselage ({distanceFromCenterline:.2f}cm vs {minimumFuselageDistance:.2f}cm, {distanceCorrection*100:.2f}% difference from minimum fuselage distance). ')
+                add_penalty(configuration, distanceCorrection)
+            minimum_beam_length = propeller['diameter'] * 2.54
+            if beam_length < minimum_beam_length:
+                lengthCorrection = (beam_length - minimum_beam_length) / minimum_beam_length
+                add_log(configuration, f'Propellers clash together ({beam_length:.2f}cm vs {minimum_beam_length:.2f}cm, {lengthCorrection*100:.2f}% difference from minimum beam length). ')
+                add_penalty(configuration, lengthCorrection)
+            # electrical compatibility
+            battery_cellCount = quad_battery['cell']
+            if battery_cellCount < motor['cell_min']:
+                voltageCorrection = (battery_cellCount - motor['cell_min']) / motor['cell_min']
+                add_log(configuration, f'Cell count below minimum ({voltageCorrection*100:.2f}% difference from minimum voltage). ')
+                add_penalty(configuration, voltageCorrection)
+            elif battery_cellCount > motor['cell_max']: 
+                voltageCorrection = (motor['cell_max'] - battery_cellCount) / motor['cell_max']
+                add_log(configuration, f'Cell count above maximum ({-voltageCorrection*100:.2f}% difference from maximum voltage). ')
+                add_penalty(configuration, voltageCorrection)
             else:
-                # physical clashing
-                if distanceFromCenterline - (propeller['diameter'] * 2.54 / 2) < plane['connection_min']:
-                    minimumFuselageDistance = plane['connection_min'] + (propeller['diameter'] * 2.54 / 2) 
-                    distanceCorrection = (distanceFromCenterline - minimumFuselageDistance) / minimumFuselageDistance
-                    add_log(configuration, f'Propellers clash with fuselage ({distanceCorrection*100:.2f}% difference from minimum fuselage distance). ')
-                    add_penalty(configuration, distanceCorrection)
-                if beam_length < (propeller['diameter'] * 2.54):
-                    lengthCorrection = (beam_length - (propeller['diameter'] * 2.54)) / (propeller['diameter'] * 2.54)
-                    add_log(configuration, f'Propellers clash together ({lengthCorrection*100:.2f}% difference from minimum beam length). ')
-                    add_penalty(configuration, lengthCorrection)
-                # electrical compatibility
-                battery_cellCount = quad_battery['cell']
-                if battery_cellCount < motor['cell_min']:
-                    voltageCorrection = (battery_cellCount - motor['cell_min']) / motor['cell_min']
-                    add_log(configuration, f'Cell count below minimum ({voltageCorrection*100:.2f}% difference from minimum voltage). ')
-                    add_penalty(configuration, voltageCorrection)
-                elif battery_cellCount > motor['cell_max']: 
-                    voltageCorrection = (motor['cell_max'] - battery_cellCount) / motor['cell_max']
-                    add_log(configuration, f'Cell count above maximum ({-voltageCorrection*100:.2f}% difference from maximum voltage). ')
-                    add_penalty(configuration, voltageCorrection)
+                testFile = (str(self.Datafolder) + '/MBO/RCbenchmark/' 
+                        + 'M' + '{:02}'.format(int(round(motor_index+1))) + '_' 
+                        + 'P' + '{:02}'.format(int(round(propeller_index+1))) + '_'
+                        + 'B' + '{:02}'.format(int(round(battery_cellCount))) + '.xlsx')
+                testData = xw.Book(str(pathlib.PureWindowsPath(testFile)))
+                thrust_max = float(testData.sheets['Interface'].range('B2').value)
+                # weight restriction
+                planeFile = (str(self.Datafolder) + '/MBO/RCbenchmark/plane.xlsx')
+                planeData = xw.Book(str(pathlib.PureWindowsPath(planeFile)))
+                plane_thrust_max = float(planeData.sheets['Interface'].range('B2').value)
+                vertical_thrust_component =  math.sin(math.radians(pitch - self.motor_angle))
+                plane_lift_max = max_weight + plane_thrust_max * vertical_thrust_component
+                if weight[configuration] > plane_lift_max:
+                    planeLiftCorrection = (plane_lift_max - weight[configuration]) / weight[configuration]
+                    add_log(configuration, f'Insufficient estimated plane lift ({plane_lift_max:.2f}N vs {weight[configuration]:.2f}N, {planeLiftCorrection*100:.2f}% difference from total weight). ')
+                    add_penalty(configuration, planeLiftCorrection)
                 else:
-                    testFile = (str(self.Datafolder) + '/MBO/RCbenchmark/' 
-                            + 'M' + '{:02}'.format(int(round(motor_index+1))) + '_' 
-                            + 'P' + '{:02}'.format(int(round(propeller_index+1))) + '_'
-                            + 'B' + '{:02}'.format(int(round(battery_cellCount))) + '.xlsx')
-                    testData = xw.Book(str(pathlib.PureWindowsPath(testFile)))
-                    thrust_max = float(testData.sheets['Interface'].range('B2').value)
-                    # weight restriction
-                    planeFile = (str(self.Datafolder) + '/MBO/RCbenchmark/plane.xlsx')
-                    planeData = xw.Book(str(pathlib.PureWindowsPath(planeFile)))
-                    plane_thrust_max = float(planeData.sheets['Interface'].range('B2').value)
-                    vertical_thrust_component =  math.sin(math.radians(pitch - self.motor_angle))
-                    if weight[configuration] > max_weight + plane_thrust_max * vertical_thrust_component:
-                        planeLiftCorrection = (max_weight - weight[configuration]) / weight[configuration]
-                        add_log(configuration, f'Insufficient estimated plane lift ({planeLiftCorrection*100:.2f}% above total weight). ')
-                        add_penalty(configuration, planeLiftCorrection)
+                    pitchFile = str(self.Datafolder) + '/CFD/Angle_of_Attack.xlsx'
+                    pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
+                    pitchData.sheets['Interface'].range('B1').value = weight[configuration]
+                    drag = float(pitchData.sheets['Interface'].range('B4').value)
+                    horizontal_thrust_component =  math.cos(math.radians(pitch - self.motor_angle))
+                    plane_thrust_max_horizontal = plane_thrust_max * horizontal_thrust_component
+                    if plane_thrust_max_horizontal < drag:
+                        planeThrustCorrection = (plane_thrust_max_horizontal - drag) / drag
+                        add_log(configuration, f'Insuffucient plane thrust ({plane_thrust_max_horizontal:.2f}N vs {drag:.2f}N, {planeThrustCorrection*100:.2f}% difference from estimated drag). ')
+                        add_penalty(configuration, planeThrustCorrection)
                     else:
-                        pitchFile = str(self.Datafolder) + '/CFD/Angle_of_Attack.xlsx'
-                        pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
-                        pitchData.sheets['Interface'].range('B1').value = weight[configuration]
-                        drag = float(pitchData.sheets['Interface'].range('B4').value)
-                        horizontal_thrust_component =  math.cos(math.radians(pitch - self.motor_angle))
-                        if plane_thrust_max * horizontal_thrust_component < drag:
-                            planeThrustCorrection = (plane_thrust_max - drag) / drag
-                            add_log(configuration, f'Insuffucient plane thrust ({planeThrustCorrection*100:.2f}% difference from estimated drag). ')
-                            add_penalty(configuration, planeThrustCorrection)
-                        else:
-                            planeData.sheets['Interface'].range('B1').value = drag      
-                            current_draw = float(planeData.sheets['Interface'].range('B3').value)
-                            if current_draw > (plane_battery['mah'] / 1000) * plane_battery['discharge']:
-                                currentLimit = (plane_battery['mah'] / 1000) * plane_battery['discharge']
-                                currentCorrection = (currentLimit - current_draw) / currentLimit
-                                add_log(configuration, f'Too much estimated plane current draw ({-currentCorrection*100:.2f}% difference from battery limit). ')
-                                add_penalty(configuration, currentCorrection)
-                    if weight[configuration] > 4 * thrust_max:
-                        quadcopterThrustCorrection = (4 * thrust_max - weight[configuration]) / weight[configuration]
-                        add_log(configuration, f'Insufficient quadcopter thrust ({quadcopterThrustCorrection*100:.2f}% difference from total weight). ')
-                        add_penalty(configuration, quadcopterThrustCorrection)
-                    else:
-                        testData.sheets['Interface'].range('B1').value = weight[configuration]/4
-                        current_draw = float(testData.sheets['Interface'].range('B3').value)
-                        if current_draw > (quad_battery['mah'] / 1000) * quad_battery['discharge']:
-                            currentLimit = (quad_battery['mah'] / 1000) * quad_battery['discharge']
+                        planeData.sheets['Interface'].range('B1').value = drag      
+                        current_draw = float(planeData.sheets['Interface'].range('B3').value)
+                        if current_draw > (plane_battery['mah'] / 1000) * plane_battery['discharge']:
+                            currentLimit = (plane_battery['mah'] / 1000) * plane_battery['discharge']
                             currentCorrection = (currentLimit - current_draw) / currentLimit
-                            add_log(configuration, f'Too much quadcopter current draw ({-currentCorrection*100:.2f}% difference from battery limit). ')
-                            add_penalty(configuration, currentCorrection) 
-                    testData.close()
-                    pitchData.close()
-                    planeData.close()
+                            add_log(configuration, f'Too much estimated plane current draw ({current_draw:.2f}A vs {currentLimit:.2f}A, {-currentCorrection*100:.2f}% difference from battery limit). ')
+                            add_penalty(configuration, currentCorrection)
+                quadcopter_lift = 4 * thrust_max
+                if weight[configuration] > quadcopter_lift:
+                    quadcopterThrustCorrection = (quadcopter_lift - weight[configuration]) / weight[configuration]
+                    add_log(configuration, f'Insufficient quadcopter thrust ({quadcopter_lift:.2f}N vs {weight[configuration]:.2f}N, {quadcopterThrustCorrection*100:.2f}% difference from total weight). ')
+                    add_penalty(configuration, quadcopterThrustCorrection)
+                else:
+                    testData.sheets['Interface'].range('B1').value = weight[configuration]/4
+                    current_draw = float(testData.sheets['Interface'].range('B3').value)
+                    if current_draw > (quad_battery['mah'] / 1000) * quad_battery['discharge']:
+                        currentLimit = (quad_battery['mah'] / 1000) * quad_battery['discharge']
+                        currentCorrection = (currentLimit - current_draw) / currentLimit
+                        add_log(configuration, f'Too much quadcopter current draw ({current_draw:.2f}A vs {currentLimit:.2f}A, {-currentCorrection*100:.2f}% difference from battery limit). ')
+                        add_penalty(configuration, currentCorrection) 
+                testData.close()
+                pitchData.close()
+                planeData.close()
             if constraints_log[configuration][0] != 'Passed': 
                 print(f'  └──> {constraints_log[configuration][0]}\n')
         invalid_configurations = [X[index] for index in invalidConfigurations_indices]
@@ -481,36 +500,31 @@ class SLT_Optimization():
                 print(f'#{configuration+1:2d}: [{X[configuration][0]+1:5d} {X[configuration][1]+1:5d}' +
                     f'{X[configuration][2]+1:5d} {X[configuration][3]+1:5d} {X[configuration][4]:8.2f}' +
                     f'{X[configuration][5]:8.2f}]')
-                # drag and thrust comparison
+                # weight restriction
                 planeFile = (str(self.Datafolder) + '/MBO/RCbenchmark/plane.xlsx')
                 planeData = xw.Book(str(pathlib.PureWindowsPath(planeFile)))
                 plane_thrust_max = float(planeData.sheets['Interface'].range('B2').value)
-                horizontal_thrust_component =  math.cos(math.radians(pitch - self.motor_angle))
-                if plane_thrust_max * horizontal_thrust_component < D[configuration]:
-                    thrustCorrection = (plane_thrust_max - D[configuration]) / D[configuration]
-                    add_log(configuration, f'Insuffucient plane thrust ({thrustCorrection*100:.2f}% difference from simulated drag). ')
-                    add_penalty(configuration, thrustCorrection)
-                # weight restriction
                 vertical_thrust_component =  math.sin(math.radians(pitch - self.motor_angle))
-                if weight[configuration] < L[configuration] + plane_thrust_max * vertical_thrust_component:
-                    liftCorrection = (weight[configuration] - L[configuration]) / L[configuration]
-                    add_log(configuration, f'Insufficient simulated plane lift ({liftCorrection*100:.2f}% difference from total weight). ')
+                plane_lift = L[configuration] + plane_thrust_max * vertical_thrust_component
+                if weight[configuration] > plane_lift:
+                    liftCorrection = (plane_lift - weight[configuration]) / weight[configuration]
+                    add_log(configuration, f'Insufficient simulated plane lift ({plane_lift:.2f}N vs {weight[configuration]:.2f}N, {liftCorrection*100:.2f}% difference from total weight). ')
                     add_penalty(configuration, liftCorrection)
+                drag = D[configuration]
+                horizontal_thrust_component =  math.cos(math.radians(pitch - self.motor_angle))
+                plane_thrust_max_horizontal = plane_thrust_max * horizontal_thrust_component
+                if plane_thrust_max_horizontal < drag:
+                    planeThrustCorrection = (plane_thrust_max - drag) / drag
+                    add_log(configuration, f'Insuffucient plane thrust ({plane_thrust_max_horizontal:.2f}N vs {drag:.2f}N, {planeThrustCorrection*100:.2f}% difference from simulated drag). ')
+                    add_penalty(configuration, planeThrustCorrection)
                 else:
-                    drag = D[configuration]
-                    horizontal_thrust_component =  math.cos(math.radians(pitch - self.motor_angle))
-                    if plane_thrust_max * horizontal_thrust_component < drag:
-                        planeThrustCorrection = (plane_thrust_max - drag) / drag
-                        add_log(configuration, f'Insuffucient plane thrust ({planeThrustCorrection*100:.2f}% difference from simulated drag). ')
-                        add_penalty(configuration, planeThrustCorrection)
-                    else:
-                        planeData.sheets['Interface'].range('B1').value = D[configuration]       
-                        current_draw = float(planeData.sheets['Interface'].range('B3').value)
-                        if current_draw > (plane_battery['mah'] / 1000) * plane_battery['discharge']:
-                            currentLimit = (plane_battery['mah'] / 1000) * plane_battery['discharge']
-                            currentCorrection = (currentLimit - current_draw) / currentLimit
-                            add_log(configuration, f'Too much plane current draw ({-currentCorrection*100:.2f}% difference from battery limit). ')
-                            add_penalty(configuration, currentCorrection)
+                    planeData.sheets['Interface'].range('B1').value = D[configuration]       
+                    current_draw = float(planeData.sheets['Interface'].range('B3').value)
+                    if current_draw > (plane_battery['mah'] / 1000) * plane_battery['discharge']:
+                        currentLimit = (plane_battery['mah'] / 1000) * plane_battery['discharge']
+                        currentCorrection = (currentLimit - current_draw) / currentLimit
+                        add_log(configuration, f'Too much plane current draw ({current_draw:.2f}A vs {currentLimit:.2f}A, {-currentCorrection*100:.2f}% difference from battery limit). ')
+                        add_penalty(configuration, currentCorrection)
                 planeData.close()
             if constraints_log[configuration][1] != 'Passed': 
                 print(f'  └──> {constraints_log[configuration][1]}\n')
@@ -521,7 +535,7 @@ class SLT_Optimization():
             print(f'\n{len(invalid_configurations)} evaluated configurations failed post-simulation constraint checks; results are penalized.\n\n')
         endurance = [value[0] for value in Y]
         objective_values = [value[1] for value in Y]
-        penalized_objective = [objective + penalty for objective, penalty in zip(objective_values, penalized_values)]
+        penalized_objective = [objective * (1 + penalty) for objective, penalty in zip(objective_values, penalized_values)]
         Y = [[endurance, objective] for endurance, objective in zip(endurance, penalized_objective)]
         evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
         evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
@@ -640,7 +654,13 @@ class SLT_Optimization():
         return S_best, E_best, X_best, Y_best
 
     def update(self, array_old, array_add):
-        [array_old.append(item) for item in array_add]
+        if array_old is None:
+            if isinstance(array_add[0], list):  # determine if 2-D list by checking if first entry is a list
+                array_old = array_add
+            else:
+                array_old = [array_add]
+        else:
+            [array_old.append(item) for item in array_add]
         return array_old
 
     def print_internal_variables(self):
@@ -701,6 +721,7 @@ class SLT_Optimization():
                 continue
             drag = '│    None  ' if S[index-1][0] in ['None', None] else f'│ {S[index-1][0]:7.2f}  '
             lift = '│    None  ' if S[index-1][1] in ['None', None] else f'│ {S[index-1][1]:7.2f}  '
+            plane_battery_in_quad_index = self.plane_to_quad_battery_index[int(round(point[3]))]
             endurance = '│    None   ' if Y[index-1][0] in ['None', None] else f'│ {Y[index-1][0]:7.2f}   '
             objective = '│    None   │' if Y[index-1][1] in ['None', None] else f'│ {Y[index-1][1]:7.2f}   │'
             print(f'│  {index:3d}   '
@@ -711,7 +732,7 @@ class SLT_Optimization():
                 + f'│ {point[0]+1:3d}   '
                 + f'│  {point[1]+1:4d}     '
                 + f'│   {point[2]+1:5d}      '
-                + f'│    {point[3]+1:5d}      '
+                + f'│    {plane_battery_in_quad_index+1:5d}      '
                 + f'│      {point[4]:8.2f}       '
                 + f'│  {point[5]:8.2f}   '
                 + endurance
@@ -725,7 +746,7 @@ class SLT_Optimization():
             print('└────────┴──────────┴──────────┴──────────┴──────────┴───────┴───────────┴──────────────┴───────────────┴─────────────────────┴─────────────┴───────────┴───────────┘\n')
         return None
 
-    def write_data_to_spreadsheet(self, initial_batch=False, include_unexplored=False):
+    def write_data_to_spreadsheet(self, initial_batch=False, include_unexplored=False, just_current=False):
         print('\nSaving data to spreadsheet...\n')
 
         def update_sheet(sheet_name):
@@ -784,25 +805,29 @@ class SLT_Optimization():
             for entry in range(len(X)):
                 write_values[entry][0:2] = S[entry]
                 write_values[entry][2:4] = E[entry]
-                write_values[entry][4:8] = [int(round(X[entry][value]+1)) for value in range(4)] #convert to 1-index for user
+                write_values[entry][4:7] = [int(round(X[entry][value]+1)) for value in range(3)] #convert to 1-index for user
+                write_values[entry][7] = self.plane_to_quad_battery_index[int(round(X[entry][3]))]+1
                 write_values[entry][8:10] = [float(X[entry][value]) for value in [4, 5]] 
                 write_values[entry][10:12] = Y[entry]
                 if log is not None:
                     write_values[entry][12:14] = log[entry]
-            evaluationsData.sheets[sheet_name].range(f'A{2}:N{rows+2}').value = write_values
+            evaluationsData.sheets[sheet_name].range(f'A2:N{rows+1}').value = write_values
             evaluationsData.save()   
 
-        if initial_batch:
-            update_sheet('design')
-            update_sheet('best_design')
-            update_sheet('current_best')
-        else:
+        if just_current:
             update_sheet('current')
-            update_sheet('current_best')
-        update_sheet('all')
-        update_sheet('all_best')
-        if include_unexplored:
-            update_sheet('unexplored_valid')
+        else:
+            if include_unexplored:
+                update_sheet('unexplored_valid')
+            if initial_batch:
+                update_sheet('design')
+                update_sheet('best_design')
+                update_sheet('current_best')
+            else:
+                update_sheet('current')
+                update_sheet('current_best')
+            update_sheet('all')
+            update_sheet('all_best')
         return None
 
     def load_previous_data_from_spreadsheet(self, include_unexplored=False):
@@ -828,16 +853,17 @@ class SLT_Optimization():
             for entry in range(active_rows-1):
                 S[entry] = load_values[entry][0:2]
                 E[entry] = load_values[entry][2:4]
-                X[entry] = [int(round(value))-1 for value in load_values[entry][4:8]]
+                X[entry] = [int(round(value))-1 for value in load_values[entry][4:7]]
+                X[entry].append(self.quad_to_plane_battery_index[int(round(load_values[entry][7]))-1])
                 X[entry].extend(load_values[entry][8:10])
                 Y[entry] = load_values[entry][10:12]
                 if 'best' not in sheet_name:
                     log[entry] = load_values[entry][12:14]
-            if len(S) > 100:
-                self.tabulate_data(S, E, X, Y, endIndex=5)
-                self.tabulate_data(S, E, X, Y, startIndex=len(S)-20, header=False)
-            else:
-                self.tabulate_data(S, E, X, Y)
+            #if len(S) > 100:
+                #self.tabulate_data(S, E, X, Y, endIndex=5)
+                #self.tabulate_data(S, E, X, Y, startIndex=len(S)-20, header=False)
+            #else:
+                #self.tabulate_data(S, E, X, Y)
             if sheet_name == 'design':
                 self.S_design = S
                 self.E_design = E
@@ -878,11 +904,9 @@ class SLT_Optimization():
                 self.Y_unexplored = Y
                 self.constraints_log_unexplored = log
 
+        load_sheet('current')
         load_sheet('design')
         load_sheet('best_design')
-        load_sheet('current_best')
-        load_sheet('current')
-        load_sheet('current_best')
         load_sheet('all')
         load_sheet('all_best')
         if include_unexplored:
@@ -901,10 +925,92 @@ class SLT_Optimization():
         ax.set_ylabel('Endurance Estimate (minutes)')
         return None
 
-    def generate_experimental_design(self, num_design):
-        print('\nGenerating experimental design...\n')          
-        hammerseley = chaospy.distributions.sampler.sequences.hammersley
-        base = hammerseley.create_hammersley_samples(num_design, dim=len(self.variables), burnin=-1, primes=()) #numpy array
+    def identify_plane_endurance(self):
+        planeFile = str(self.Datafolder) + '/MBO/RCbenchmark/plane.xlsx' 
+        planeData = xw.Book(str(pathlib.PureWindowsPath(planeFile)))
+        plane_thrust_max = float(planeData.sheets['Interface'].range('B2').value)
+        print('\nIdentifying plane endurance: ', end='')
+        pitchFile = str(self.Datafolder) + '/CFD/Angle_of_Attack.xlsx'
+        pitchData = xw.Book(str(pathlib.PureWindowsPath(pitchFile)))
+        max_weight = float(pitchData.sheets['Interface'].range('B2').value)
+        plane = self.plane_data[self.plane] 
+        number = len(self.plane_battery_data)
+        write_values = [[None for _ in range(14)] for entry in range(len(self.plane_battery_data))]
+        for index, plane_battery in enumerate(self.plane_battery_data, start=0):
+            if index in [int(round((step+1)*number/10)) for step in range(11)]:
+                print('█', end='')
+            weight = (plane['weight'] 
+                    + plane_battery['weight']
+                    + self.payload_weight) * 0.0098      # convert from grams to Newtons
+            if weight < max_weight:
+                pitchData.sheets['Interface'].range('B1').value = weight
+                lift = 'Good'
+            else:
+                pitchData.sheets['Interface'].range('B1').value = max_weight
+                lift = 'Over'
+            pitch = float(pitchData.sheets['Interface'].range('B3').value)
+            drag = float(pitchData.sheets['Interface'].range('B4').value)
+            penalty = 0
+            log = ''
+            vertical_thrust_component =  math.sin(math.radians(pitch - self.motor_angle))
+            plane_lift_max = max_weight + plane_thrust_max * vertical_thrust_component
+            if weight > plane_lift_max:
+                planeLiftCorrection = (plane_lift_max - weight) / weight
+                log = f'Insufficient estimated plane lift ({plane_lift_max:.2f}N vs {weight:.2f}N, {planeLiftCorrection*100:.2f}% difference from total weight). '
+                penalty = planeLiftCorrection
+            else:
+                horizontal_thrust_component =  math.cos(math.radians(pitch - self.motor_angle))
+                plane_thrust_max_horizontal = plane_thrust_max * horizontal_thrust_component
+                if plane_thrust_max_horizontal < drag:
+                    planeThrustCorrection = (plane_thrust_max_horizontal - drag) / drag
+                    log = f'Insuffucient plane thrust ({plane_thrust_max_horizontal:.2f}N vs {drag:.2f}N, {planeThrustCorrection*100:.2f}% difference from estimated drag). '
+                    penalty = planeThrustCorrection
+                else:
+                    planeData.sheets['Interface'].range('B1').value = drag      
+                    current_draw = float(planeData.sheets['Interface'].range('B3').value)
+                    if current_draw > (plane_battery['mah'] / 1000) * plane_battery['discharge']:
+                        currentLimit = (plane_battery['mah'] / 1000) * plane_battery['discharge']
+                        currentCorrection = (currentLimit - current_draw) / currentLimit
+                        log = f'Too much estimated plane current draw ({current_draw:.2f}A vs {currentLimit:.2f}A, {-currentCorrection*100:.2f}% difference from battery limit). '
+                        penalty = currentCorrection
+            planeData.sheets['Interface'].range('B1').value = drag
+            eff = float(planeData.sheets['Interface'].range('B5').value) # motor efficiency varies based on thrust to overcome drag
+            if plane_battery['battery_hour_rating'] == 'X':
+                R = 1      # battery hour rating is typically equal to 1hr
+            else:
+                R = plane_battery['battery_hour_rating']
+            n = 1.3     # Peukert exponent is typically equal to 1.3 for LiPo batteries
+            V = plane_battery['cell'] * 3.7     # 3.7 volts in each LiPo cell
+            C = plane_battery['mah'] / 1000       # convert from mAh to Ah
+            U = self.target_velocity * (1000/3600)      # get the flight velocity in m/s from km/hr input value
+            E = R**(1-n) * ((eff * V * C)/(drag * U)) ** n
+            write_values[index][0:4] = [drag, lift, pitch, weight]
+            write_values[index][4:10] = [None, None, None, index+1, None, None] #convert to 1-index for user
+            write_values[index][10:12] = [E, E * (1 + penalty)]
+            write_values[index][12:14] = [None, log]
+        pitchData.close() 
+        planeData.close()
+        evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
+        evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
+        evaluationsData.sheets['plane'].range(f'A2:N{number+1}').value = write_values
+        evaluationsData.save()   
+        return None
+
+    def assess_current_simulated_data(self):    #assumes that the configurations are valid
+        self.load_previous_data_from_spreadsheet()
+        self.constraints_log, penalized_values, self.E = self.pre_check_constraints(self.X)
+        self.Y = self.calculate_endurance(self.S, self.X)
+        self.constraints_log, self.Y = self.post_check_constraints(self.S, self.E, self.X, self.Y, self.constraints_log)
+        self.write_data_to_spreadsheet(just_current=True)
+        return None
+
+    def generate_experimental_design(self, num_design, distribution='hammerseley', check_duplicate_categorical=True):
+        print('\nGenerating experimental design...\n') 
+        if distribution=='hammerseley':
+            hammerseley = chaospy.distributions.sampler.sequences.hammersley
+            base = hammerseley.create_hammersley_samples(num_design, dim=len(self.variables), burnin=-1, primes=()) #numpy array
+        else:
+            base = np.random.rand(len(self.variables), num_design)
         motor_selections = np.rint(base[0, :] * (len(self.motor_data)-1)).astype(int).tolist()
         propeller_selections_subindex = np.rint(base[1, :] * np.asarray([len(self.motor_data[motor]['propeller'])-1 for motor in motor_selections])).astype(int).tolist()
         propeller_selections = [self.motor_data[motor]['propeller'][index] for (motor, index) in list(zip(motor_selections, propeller_selections_subindex))]
@@ -931,35 +1037,110 @@ class SLT_Optimization():
                             break
                 return duplicate
 
-        duplicates = [index for index in range(len(design)) if _check_if_duplicate(design, index)]
-        for index in duplicates:
-            entry = design[index]
-            attempt=0
-            while _check_if_duplicate(design, index, entry) and attempt<100:
-                attempt+=1
-                motor_selection = np.random.choice(range(len(self.motor_data)-1))
-                propeller_selection = np.random.choice(self.motor_data[motor_selection]['propeller'])
-                quad_battery_selection = np.random.choice(self.motor_data[motor_selection]['battery'])
-                plane_battery_selection = np.random.choice(range(len(self.plane_battery_data)))
-                entry = design[index][:]
-                entry[0:4] = [motor_selection, propeller_selection, quad_battery_selection, plane_battery_selection]            
-            design[index][0:4] = entry[0:4]
+        if check_duplicate_categorical:
+            duplicates = [index for index in range(len(design)) if _check_if_duplicate(design, index)]
+            for index in duplicates:
+                entry = design[index]
+                attempt=0
+                while _check_if_duplicate(design, index, entry) and attempt<100:
+                    attempt+=1
+                    motor_selection = np.random.choice(range(len(self.motor_data)-1))
+                    propeller_selection = np.random.choice(self.motor_data[motor_selection]['propeller'])
+                    quad_battery_selection = np.random.choice(self.motor_data[motor_selection]['battery'])
+                    plane_battery_selection = np.random.choice(range(len(self.plane_battery_data)))
+                    entry = design[index][:]
+                    entry[0:4] = [motor_selection, propeller_selection, quad_battery_selection, plane_battery_selection]            
+                design[index][0:4] = entry[0:4]
+                print(f'Design#{index:2d} is randomized to avoid duplicate categorical variable settings.')
+            print()
         print('┌────────┬───────┬───────────┬──────────────┬───────────────┬─────────────────────┬─────────────┐')
         print('│ Design │ Motor │ Propeller │ Quad battery │ Plane battery │ Centerline distance │ Beam length │')
         print('├────────┼───────┼───────────┼──────────────┼───────────────┼─────────────────────┼─────────────┤')
         for index, point in enumerate(design, start=1):
+            plane_battery_in_quad_index = self.plane_to_quad_battery_index[int(round(point[3]))]
             print(f'│  {index:3d}   '
                 + f'│ {point[0]+1:3d}   '
                 + f'│ {point[1]+1:4d}      '
                 + f'│    {point[2]+1:5d}     '
-                + f'│    {point[3]+1:5d}      '
+                + f'│    {plane_battery_in_quad_index+1:5d}      '
                 + f'│      {point[4]:8.2f}       '
                 + f'│  {point[5]:8.2f}   │')
-            time.sleep(0.1)
+            if num_design < 200:
+                time.sleep(0.05)
         print('└────────┴───────┴───────────┴──────────────┴───────────────┴─────────────────────┴─────────────┘\n')
-        for index in duplicates:
-            print(f'Design#{index:2d} is randomized to avoid duplicate categorical variable settings.') 
+
         return design
+
+    def set_valid_domain(self, explore_size=1000, continueFrom=0, partitionSize=10):
+        print(f'\n\n\nNote:\n The target velocity is {float(self.target_velocity):.2f}kph. Meanwhile, pitch estimates are made using data at 45kph.\n\n')
+        print(f'''
+        {'-'*50}
+                        Domain Validity Exploration
+        {'-'*50}
+        ''')
+        time.sleep(1.0)
+        evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
+        evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
+        # Precheck constraints prior to suggesting for evaluation
+        # For unsatisfactory configurations, skip evaluation and compute penalized objective value
+        samples = self.generate_experimental_design(num_design=explore_size, check_duplicate_categorical=False)
+        updates = math.ceil(len(samples)/partitionSize)
+        for update in range(updates):
+            if continueFrom-1 > update:
+                continue
+            start = update * partitionSize
+            end = (update + 1) * partitionSize
+            if end > len(samples):
+                X = samples[start:]
+            else:
+                X = samples[start:end]
+            print(f'Partition# {update+1}')            
+            active_rows_valid = evaluationsData.sheets['unexplored_valid'].range('E1').end('down').row
+            active_rows_invalid = evaluationsData.sheets['unexplored_invalid'].range('E1').end('down').row 
+            if active_rows_valid == 65536:
+                active_rows_valid = 1
+            if active_rows_invalid == 65536:
+                active_rows_invalid = 1           
+            log, penalized_values, E = self.pre_check_constraints(X)
+            valid_indices = [configuration for configuration in range(len(X)) if penalized_values[configuration] == 0 ]
+            invalid_indices = [configuration for configuration in range(len(X)) if penalized_values[configuration] != 0 ]
+            write_valid_values = [[None for _ in range(14)] for configuration in range(len(valid_indices))]
+            write_invalid_values = [[None for _ in range(14)] for configuration in range(len(invalid_indices))]
+            for configuration in range(len(X)):
+                if penalized_values[configuration] == 0:
+                    entry = valid_indices.index(configuration)
+                    write_valid_values[entry][2:4] = E[configuration]
+                    write_valid_values[entry][4:8] = [int(round(X[configuration][value]+1)) for value in range(4)] #convert to 1-index for user
+                    write_valid_values[entry][8:10] = [float(X[configuration][value]) for value in [4, 5]] 
+                    write_valid_values[entry][12:14] = log[configuration]
+                if penalized_values[configuration] != 0:
+                    entry = invalid_indices.index(configuration)
+                    write_invalid_values[entry][0:2] = ['None', 'None']
+                    write_invalid_values[entry][2:4] = E[configuration]
+                    write_invalid_values[entry][4:8] = [int(round(X[configuration][value]+1)) for value in range(4)] #convert to 1-index for user
+                    write_invalid_values[entry][8:10] = [float(X[configuration][value]) for value in [4, 5]]
+                    write_invalid_values[entry][10:12] = ['None', penalized_values[configuration]]
+                    write_invalid_values[entry][12:14] = log[configuration]            
+            if start == 0:
+                if active_rows_valid > 1:
+                    evaluationsData.sheets['unexplored_valid'].range(f'A2:N{active_rows_valid}').clear_contents() 
+                if active_rows_invalid > 1:
+                    evaluationsData.sheets['unexplored_invalid'].range(f'A2:N{active_rows_invalid}').clear_contents()   
+                print(active_rows_valid)
+                print(active_rows_invalid)
+                print(f'A2:J{len(valid_indices)+1}')
+                print(f'A2:J{len(invalid_indices)+1}')
+                evaluationsData.sheets['unexplored_valid'].range(f'A2:J{len(valid_indices)+1}').value = write_valid_values
+                evaluationsData.sheets['unexplored_invalid'].range(f'A2:J{len(invalid_indices)+1}').value = write_invalid_values
+            else:
+                print(active_rows_valid)
+                print(active_rows_invalid)
+                print(f'A{active_rows_valid+1}:J{len(valid_indices)+active_rows_valid}')
+                print(f'A{active_rows_invalid+1}:J{len(invalid_indices)+active_rows_invalid}')
+                evaluationsData.sheets['unexplored_valid'].range(f'A{active_rows_valid+1}:J{len(valid_indices)+active_rows_valid}').value = write_valid_values
+                evaluationsData.sheets['unexplored_invalid'].range(f'A{active_rows_invalid+1}:J{len(invalid_indices)+active_rows_invalid}').value = write_invalid_values                
+            evaluationsData.save()
+        return None
 
     def initial_batch(self, num_design = 10, adjust_pitch=False):
         print(f'\n\n\nNote:\n The target velocity is {float(self.target_velocity):.2f}kph. Meanwhile, pitch estimates are made using data at 45kph.\n\n')
@@ -973,6 +1154,7 @@ class SLT_Optimization():
         # For unsatisfactory configurations, skip evaluation and compute penalized objective value
         self.X_design = self.generate_experimental_design(num_design)
         self.constraints_log_design, penalized_values, self.E_design = self.pre_check_constraints(self.X_design)
+        
         self.S_design, self.Y_design = self.process_actual_results(self.E_design, self.X_design, penalized_values)
 
         # Recheck constraints after obtaining lift and drag in simulations
@@ -993,7 +1175,7 @@ class SLT_Optimization():
 
         self.write_data_to_spreadsheet(initial_batch=True)
 
-    def additional_batch(self, batch_size_per_approach=5, adjust_pitch=False):
+    def additional_batch(self, batch_size_per_approach=5, adjust_pitch=False, approaches = ['EI', 'MPI', 'LCB']):
         self.load_previous_data_from_spreadsheet(include_unexplored = True)
         print(f'\n\n\nNote:\n The target velocity is {float(self.target_velocity):.2f}kph. Meanwhile, pitch estimates are made using data at 45kph.\n\n')
         print(f'''
@@ -1052,11 +1234,11 @@ class SLT_Optimization():
         def get_configurations(acquisition_approaches = ['EI'], batch_size = 5):
             suggested = []
             configurations = np.asarray(self.X_unexplored)
-            for acquisition_method in acquisition_approaches:
+            for approach, acquisition_method in enumerate(acquisition_approaches, start=1):
                 gaussian_process_metamodel(True, acquisition_method, 'local_penalization', batch_size, False)   # batch size must be greater than 1 to use the acquisition function with local penalization
                 self.metamodel.evaluator.acquisition.update_batches(None,None,None)
                 acquisition_values = self.metamodel.evaluator.acquisition.acquisition_function(configurations)
-                index_best = np.argmin(acquisition_values)
+                index_best = np.argmax(acquisition_values)
                 suggested.append(index_best) 
                 X_batch = configurations[index_best]
                 get = 1
@@ -1065,25 +1247,23 @@ class SLT_Optimization():
                 while get < batch_size:
                     self.metamodel.evaluator.acquisition.update_batches(X_batch,L,Min)
                     acquisition_values = self.metamodel.evaluator.acquisition.acquisition_function(configurations)
-                    index_best = np.argmin(acquisition_values)
+                    masked_acquisition_values = np.ma.array(acquisition_values, mask=False)
+                    for existing_index in suggested:
+                        masked_acquisition_values.mask[existing_index] = True
+                    index_best = np.argmax(masked_acquisition_values)
                     suggested.append(index_best) 
                     new_sample = configurations[index_best]
                     X_batch = np.vstack((X_batch,new_sample))
                     get += 1
-                #gaussian_process_metamodel(True, acquisition_method, batch_method, 1, False)
-                #acquisition_values = self.metamodel.acquisition.acquisition_function(configurations)
-                #best_indices = sorted([index for index, value in enumerate(acquisition_values, start=0)], reverse=True)[:batch_size]
-                #print(best_indices)
-                #suggested.extend(best_indices) 
-                print(suggested)
+                print(f'{acquisition_method}: {suggested[(approach-1)*batch_size:approach*batch_size]}')
             suggested = list(dict.fromkeys(suggested))  # remove duplicates
-            print(suggested)
+            print(f'\nNo duplicates: {suggested}')
             suggestions = [self.X_unexplored[index] for index in suggested]
             self.S_unexplored = [self.S_unexplored[index] for index in range(len(self.S_unexplored)) if index not in suggested]
             self.E_unexplored = [self.E_unexplored[index] for index in range(len(self.E_unexplored)) if index not in suggested]
             self.X_unexplored = [self.X_unexplored[index] for index in range(len(self.X_unexplored)) if index not in suggested]
             self.Y_unexplored = [self.Y_unexplored[index] for index in range(len(self.Y_unexplored)) if index not in suggested]
-            self.constraints_log_unexplored = [self.constraints_log_unexplored[index] for index in range(len(self.constraints_log_unexplored)) if index not in suggested]
+            self.constraints_log_unexplored = [self.constraints_log_unexplored[index] for index in range(len(self.constraints_log_unexplored)) if index not in suggested]            
             return suggestions
 
         # For trying out various approaches on the metamodel
@@ -1099,8 +1279,9 @@ class SLT_Optimization():
         #gaussian_process_metamodel(True, 'LCB', 'thompson_sampling', batch_size_per_approach)
 
         # For considering only known feasible configurations
-        self.X = get_configurations(acquisition_approaches = ['EI', 'MPI', 'LCB'], batch_size = batch_size_per_approach)
+        self.X = get_configurations(acquisition_approaches = approaches, batch_size = batch_size_per_approach)
         
+        print('\nSuggested evaluations:')
         for item in self.X:
             print(item)
 
@@ -1133,11 +1314,14 @@ class SLT_Optimization():
         self.X_best_history = self.update(self.X_best_history, self.X_best)
         self.Y_best_history = self.update(self.Y_best_history, self.Y_best)
 
-        self.metamodel.plot_acquisition()
-        self.write_data_to_spreadsheet(initial_batch=False)
+        #self.metamodel.plot_acquisition()
+        self.write_data_to_spreadsheet(initial_batch=False, include_unexplored=True)
         
         return None    
 
 thesis = SLT_Optimization(target_velocity = 44, payload_weight = 500, motor_angle = 5, beam_length_max = 80)
-#thesis.initial_batch(num_design = 1000, adjust_pitch=False)
-thesis.additional_batch(batch_size_per_approach = 10, adjust_pitch=False)
+#thesis.identify_plane_endurance()
+thesis.assess_current_simulated_data()
+#thesis.initial_batch(num_design = 100, adjust_pitch=False)
+#thesis.set_valid_domain(explore_size = 100, continueFrom=0, partitionSize=50)
+#thesis.additional_batch(batch_size_per_approach = 10, adjust_pitch=False, approaches = ['EI'])
