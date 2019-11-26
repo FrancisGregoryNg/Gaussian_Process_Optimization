@@ -1319,9 +1319,51 @@ class SLT_Optimization():
         
         return None    
 
+    def predict_using_metamodel(self):
+        self.load_previous_data_from_spreadsheet(include_unexplored = True)
+        print(f'\n\n\nNote:\n The target velocity is {float(self.target_velocity):.2f}kph. Meanwhile, pitch estimates are made using data at 45kph.\n\n')
+        print(f'''
+        {'-'*50}
+                        Metamodeling Prediction
+        {'-'*50}
+        ''')
+        previous_input = np.asarray(self.X_history)
+        previous_objective = np.asarray([value[1] for value in self.Y_history]).reshape(-1, 1)
+        current_input = np.asarray(self.X)
+        current_objective = np.asarray([value[1] for value in self.Y]).reshape(-1, 1)
+        metamodel = GPyOpt.methods.BayesianOptimization(
+            f = None, 
+            domain = self.variables,
+            constraints = None,
+            cost_withGradients = None,
+            model_type = 'GP',
+            X = previous_input,
+            Y = previous_objective,  # reshape into 2d array (column)
+            acquisition_type = 'EI',
+            normalize_Y = True,
+            exact_feval = True,
+            acquisition_optimizer_type = 'lbfgs',
+            evaluator_type = 'local_penalization',
+            batch_size = 5,
+            maximize = self.maximize,
+            de_duplication = True,
+            Gower = True,
+            noise_var = 0)
+        print('\nUpdating metamodel...\n') 
+        metamodel._update_model()
+        print('\nPredicting values...\n')         
+        m, v = metamodel.model.predict(current_input)
+        evaluationsFile = str(self.Datafolder) + '/MBO/evaluations.xls'
+        evaluationsData = xw.Book(str(pathlib.PureWindowsPath(evaluationsFile)))
+        evaluationsData.sheets['current'].range(f'K2').value = m
+        evaluationsData.save()  
+        RMSE = math.sqrt(np.sum(np.square(np.subtract(current_objective, m)))/len(self.X))
+        print(RMSE)
+
 thesis = SLT_Optimization(target_velocity = 44, payload_weight = 500, motor_angle = 5, beam_length_max = 80)
 #thesis.identify_plane_endurance()
-thesis.assess_current_simulated_data()
+#thesis.assess_current_simulated_data()
 #thesis.initial_batch(num_design = 100, adjust_pitch=False)
 #thesis.set_valid_domain(explore_size = 100, continueFrom=0, partitionSize=50)
 #thesis.additional_batch(batch_size_per_approach = 10, adjust_pitch=False, approaches = ['EI'])
+thesis.predict_using_metamodel()
